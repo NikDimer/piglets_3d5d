@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Vendored third-party downloads (STE Slicer sources + test models archive)
+_vendor/
+
+# Qt/QML compiled caches
+*.qmlc
+*.jsc
+
+# IDE / OS junk
+.idea/
+.vscode/
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# Logs
+*.log
+
+# Local experiment scratch
+scratch/

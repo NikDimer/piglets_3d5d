@@ -1,0 +1,8 @@
+{
+    "name": "AI Assistant",
+    "author": "piglets_3d5d",
+    "version": "1.0.0",
+    "description": "LLM chat assistant with MCP tools for STE Slicer (3D/5D additive copilot)",
+    "api": 5,
+    "i18n-catalog": "steslicer"
+}

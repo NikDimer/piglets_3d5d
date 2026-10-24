@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>STE Slicer AI Assistant · 3D/5D Additive Copilot</title>
+  <link rel="stylesheet" href="style.css">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><circle cx='16' cy='16' r='15' fill='%238dc63f'/><circle cx='11' cy='13' r='4' fill='white'/><circle cx='21' cy='13' r='4' fill='white'/><circle cx='11' cy='13' r='2' fill='%232a2f28'/><circle cx='21' cy='13' r='2' fill='%232a2f28'/><path d='M10 21 q6 5 12 0' stroke='%232a2f28' stroke-width='2' fill='none'/></svg>">
+</head>
+<body>
+
+  <header>
+    <div class="logo">
+      <h1>STE Slicer <span>AI Assistant</span></h1>
+      <div class="sub">3D/5D Additive Copilot · Stereotech Hybrid 530</div>
+    </div>
+
+    <div class="hdr-stats">
+      <div class="chip" id="conn-chip"><span class="dot off" id="conn-dot"></span><span id="conn-text">нет связи</span></div>
+      <div class="chip">🖨 <b id="hdr-printer">—</b></div>
+      <div class="chip mode-chip">Режим: <b id="hdr-mode">—</b></div>
+      <div class="chip">⏱ <b id="hdr-time">—</b></div>
+      <div class="chip">⚖ <b id="hdr-material">—</b></div>
+    </div>
+
+    <div class="hdr-actions">
+      <button class="btn" id="btn-export" title="Сохранить project.3mf + result.gcode">📦 Экспорт</button>
+      <button class="btn" id="btn-tools" title="Список MCP-инструментов">🛠 Инструменты</button>
+      <button class="btn" id="btn-settings" title="Base URL, API-ключ, модель">⚙️ Настройки</button>
+    </div>
+  </header>
+
+  <div class="slice-bar-wrap"><div class="slice-bar" id="slice-bar"></div></div>
+
+  <div class="main">
+    <aside>
+      <h3>Быстрые сценарии</h3>
+      <button class="preset" data-text="Кронштейн под нагрузку, PETG, без поддержек. Приложу STL — настрой печать полностью и запусти слайсинг.">
+        🔧 Кронштейн под нагрузку, PETG
+      </button>
+      <button class="preset" data-text="Втулка/штуцер: приложен STL. Проанализируй геометрию, выбери режим (рассмотри 5D Spiral), материал и параметры, сориентируй по оси Z и запусти слайсинг.">
+        ⚙️ Втулка/штуцер в 5D-режиме
+      </button>
+      <button class="preset" data-text="Проанализируй текущую сцену и текущие настройки слайсера: предложи и примени оптимизации (режим, ориентация, параметры), затем запусти слайсинг.">
+        🔍 Анализ сцены и оптимизация
+      </button>
+      <button class="preset" data-text="Сравни для детали на столе печать в 3D и 5D: геометрия, поддержки, прочность, время. Выбери лучший режим, настрой и прослайсь.">
+        ⚖️ Сравнение 3D и 5D
+      </button>
+
+      <div class="side-note">
+        Прикрепляйте <b>STL/OBJ/3MF</b> и <b>JPG/PNG</b> — Паскаль загрузит модель в слайсер,
+        проанализирует геометрию и сам настроит печать.<br><br>
+        Результаты: <b>project.3mf</b> + <b>result.gcode</b> кнопкой «Экспорт».
+      </div>
+    </aside>
+
+    <div class="chat-wrap">
+      <div id="chat">
+        <div class="empty-state" id="empty-state">
+          <video class="hero-mascot" src="/assets/mascot_idle_alpha.webm" autoplay loop muted playsinline></video>
+          <h2>Привет! Я Паскаль, ваш 3D/5D технокопилот 🦎</h2>
+          <p>Опишите задачу печати текстом (материал, нагрузки, среда) и приложите модель.
+          Я сам выберу режим <b>3D / 5D Spiral / 5D</b>, материал, профиль и параметры,
+          сориентирую деталь, запущу нарезку и объясню каждое решение.</p>
+        </div>
+      </div>
+
+      <!-- Pascal: bottom-left speaking mascot -->
+      <div class="pascal" id="pascal">
+        <video id="pascal-idle"  class="show" src="/assets/mascot_idle_alpha.webm"  autoplay loop muted playsinline preload="auto" title="Паскаль"></video>
+        <video id="pascal-think" class=""      src="/assets/mascot_think_alpha.webm" autoplay loop muted playsinline preload="auto"></video>
+        <video id="pascal-happy" class=""      src="/assets/mascot_happy_alpha.webm" autoplay loop muted playsinline preload="auto"></video>
+        <div class="pascal-speech" id="pascal-speech">
+          <div class="who">🦎 Паскаль</div>
+          <div class="text" id="pascal-speech-text">Привет! Опишите задачу и приложите модель — я всё настрою сам.</div>
+        </div>
+      </div>
+
+      <div class="composer" id="composer">
+        <div class="attach-zone" id="attach-zone"></div>
+        <div class="input-row">
+          <button class="icon-btn" id="btn-attach" title="Прикрепить файл (STL/OBJ/3MF/JPG/PNG)">📎</button>
+          <textarea id="input" rows="2" placeholder="Опишите задачу: «Шестерня редуктора, ASA, высокая нагрузка, точная эвольвента…»&#10;(Enter — отправить, Shift+Enter — новая строка)"></textarea>
+          <button class="icon-btn" id="send" title="Отправить">➤</button>
+        </div>
+        <div class="hint">Drag &amp; drop файлов прямо в это поле · файлы остаются на вашем компьютере</div>
+        <input type="file" id="file-input" multiple accept=".stl,.STL,.obj,.OBJ,.3mf,.jpg,.jpeg,.png" hidden>
+      </div>
+    </div>
+  </div>
+
+  <!-- settings modal -->
+  <div class="modal-backdrop" id="modal-settings">
+    <div class="modal">
+      <div class="modal-head">⚙️ Настройки API (OpenAI-совместимый) <button class="x" data-close="modal-settings">×</button></div>
+      <div class="modal-body">
+        <div class="field">
+          <label>Base URL</label>
+          <input id="set-url" placeholder="https://api.timeweb.ai/v1" spellcheck="false">
+        </div>
+        <div class="field">
+          <label>API Key</label>
+          <input id="set-key" type="password" placeholder="sk-..." spellcheck="false">
+          <div class="note">Ключ хранится в настройках STE Slicer. По умолчанию подставлен демо-ключ организаторов.</div>
+        </div>
+        <div class="field">
+          <label>Модель</label>
+          <input id="set-model" placeholder="dashscope/qwen3.8-flash" spellcheck="false">
+        </div>
+      </div>
+      <div class="modal-foot">
+        <button class="btn" data-close="modal-settings">Отмена</button>
+        <button class="btn primary" id="btn-save-settings">Сохранить</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- tools modal -->
+  <div class="modal-backdrop" id="modal-tools">
+    <div class="modal">
+      <div class="modal-head">🛠 MCP-инструменты агента <button class="x" data-close="modal-tools">×</button></div>
+      <div class="modal-body" id="tools-list"><p style="color:#75806f">Загрузка…</p></div>
+      <div class="modal-foot">
+        <button class="btn" data-close="modal-tools">Закрыть</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- export modal -->
+  <div class="modal-backdrop" id="modal-export">
+    <div class="modal">
+      <div class="modal-head">📦 Экспорт результатов (3MF + G-code) <button class="x" data-close="modal-export">×</button></div>
+      <div class="modal-body">
+        <div class="field">
+          <label>Имя модели (папка results/&lt;имя&gt;)</label>
+          <input id="export-name" placeholder="например: 1. Шестерня" spellcheck="false">
+        </div>
+        <div id="export-result" style="font-size:13.5px;line-height:1.7;color:#75806f"></div>
+      </div>
+      <div class="modal-foot">
+        <button class="btn" data-close="modal-export">Закрыть</button>
+        <button class="btn primary" id="btn-do-export">Экспортировать</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="toast"></div>
+
+  <script src="app.js"></script>
+</body>
+</html>
