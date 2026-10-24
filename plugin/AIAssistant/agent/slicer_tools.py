@@ -44,17 +44,39 @@ MODE_ALIASES = {
     "5d": MODE_5D, "cylindrical_full": MODE_5D, "полное 5d": MODE_5D,
 }
 
-# key settings exposed in the summary tool (25 engineering-relevant params)
+# key settings exposed in the summary tool (engineering-relevant params).
+# Names verified against THIS build's resources/definitions/fdmprinter.def.json:
+# speeds live under speed_*, fan under cool_fan_*, retraction under retraction_*,
+# support density is support_infill_rate.
 SUMMARY_KEYS = [
     "layer_height", "layer_height_0", "line_width", "wall_line_count",
     "top_layers", "bottom_layers", "infill_sparse_density", "infill_pattern",
     "material_print_temperature", "material_bed_temperature",
-    "print_speed", "infill_speed", "wall_speed", "support_enable",
-    "support_type", "support_angle", "support_density", "support_interface_enable",
-    "retraction_enable", "retract_amount", "retraction_speed",
+    "speed_print", "speed_infill", "speed_wall", "support_enable",
+    "support_type", "support_angle", "support_infill_rate", "support_interface_enable",
+    "retraction_enable", "retraction_amount", "retraction_speed",
     "adhesion_type", "brim_line_count", "skirt_line_count", "draft_shield_enabled",
-    "cooling_fan_enabled", "machine_nozzle_size", "material_diameter",
+    "cool_fan_enabled", "machine_nozzle_size", "material_diameter",
 ]
+
+# Common Cura-style names the LLM tends to use -> real keys in this build.
+KEY_ALIASES = {
+    "print_speed": "speed_print",
+    "infill_speed": "speed_infill",
+    "wall_speed": "speed_wall",
+    "outer_wall_speed": "speed_wall_0",
+    "inner_wall_speed": "speed_wall_x",
+    "top_bottom_speed": "speed_topbottom",
+    "travel_speed": "speed_travel",
+    "retract_amount": "retraction_amount",
+    "retract_enabled": "retraction_enable",
+    "retract_speed": "retraction_speed",
+    "cooling_fan_enabled": "cool_fan_enabled",
+    "cooling_fan_speed": "cool_fan_speed",
+    "fan_enabled": "cool_fan_enabled",
+    "fan_speed": "cool_fan_speed",
+    "support_density": "support_infill_rate",
+}
 
 # angular resolution for the outer-radius profile of a cross-section
 PROFILE_BINS = 72
@@ -187,16 +209,34 @@ def read_setting(key):
     return _jsonify(value)
 
 
+def _resolve_key(key):
+    """Map common Cura-style names to this build's real keys."""
+    key = str(key).strip()
+    return KEY_ALIASES.get(key, key)
+
+
+def _stack_definition(stack, key):
+    """ContainerStack's per-key lookup is getSettingDefinition(); getDefinition
+    exists only on containers and returns the DefinitionContainer itself."""
+    try:
+        return stack.getSettingDefinition(str(key))
+    except Exception:
+        return None
+
+
 def write_setting(key, value):
     """Write a setting into userChanges of the extruder stack and the global
-    stack (where defined) so it applies and shows up in the slicer UI."""
+    stack (where defined) so it applies and shows up in the slicer UI.
+
+    This fork adds mode-specific twins (<key>_classic / <key>_cylindrical) for
+    speeds, fan and supports — the 5D engine reads the _cylindrical variant,
+    the 3D engine the _classic one. When a twin exists it is written too, so
+    the value holds in every printing mode."""
     stack = get_global_stack()
     if stack is None:
         raise RuntimeError("нет активного принтера (глобальный стек настроек пуст)")
-    try:
-        definition = stack.getDefinition(key)
-    except Exception:
-        definition = None
+    key = _resolve_key(key)
+    definition = _stack_definition(stack, key)
     if definition is None:
         raise ValueError("неизвестный ключ настройки: %s" % key)
 
@@ -216,7 +256,34 @@ def write_setting(key, value):
         Logger.log("w", "[AI Assistant] global write failed for %s: %s" % (key, e))
     if not written:
         raise RuntimeError("не удалось записать настройку %s" % key)
-    return {"key": key, "value": _jsonify(value), "written_to": written}
+
+    variants = []
+    for suffix in ("_classic", "_cylindrical"):
+        twin = key + suffix
+        twin_def = _stack_definition(stack, twin)
+        if twin_def is None:
+            continue
+        try:
+            twin_value = _coerce_setting_value(twin_def, value)
+            stack.userChanges.setProperty(twin, "value", twin_value)
+            variants.append(twin)
+        except Exception as e:
+            Logger.log("w", "[AI Assistant] twin write failed for %s: %s" % (twin, e))
+    return {"key": key, "value": _jsonify(value),
+            "written_to": written, "variants": variants}
+
+
+def write_settings_batch(settings):
+    """Apply a dict of settings: valid keys are applied, invalid ones are
+    reported in 'rejected' — one bad key must not kill the whole batch."""
+    applied = []
+    rejected = []
+    for raw_key, value in (settings or {}).items():
+        try:
+            applied.append(write_setting(raw_key, value))
+        except Exception as e:
+            rejected.append({"key": str(raw_key), "error": str(e)})
+    return {"applied": applied, "rejected": rejected}
 
 
 def _coerce_setting_value(definition, value):
@@ -269,13 +336,13 @@ def _find_printing_mode_key():
     if stack is None:
         raise RuntimeError("нет активного принтера")
     try:
-        if stack.getDefinition("printing_mode") is not None:
+        if _stack_definition(stack, "printing_mode") is not None:
             return "printing_mode"
     except Exception:
         pass
     try:
         for key in stack.getAllKeys():
-            definition = stack.getDefinition(key)
+            definition = _stack_definition(stack, key)
             if definition is None:
                 continue
             try:
@@ -403,7 +470,7 @@ def search_settings_definitions(query):
         keys = list(SUMMARY_KEYS)
     for key in keys:
         try:
-            definition = stack.getDefinition(key)
+            definition = _stack_definition(stack, key)
         except Exception:
             continue
         if definition is None:
@@ -818,7 +885,13 @@ def arrange_and_clear_scene(action="arrange"):
 # slicing
 # ----------------------------------------------------------------------------
 
-def run_slicing(wait=True, timeout=600):
+def run_slicing(wait=True, timeout=600, stall_timeout=180):
+    """Start a slice and wait. Besides the overall timeout, a stall detector
+    fires when the engine reports state=slicing but progress has not moved
+    for stall_timeout seconds — this happens when the 5D pipeline's external
+    tools fail (e.g. openscad intersection dies: 'Failed to intersect model!'
+    in steslicer.log) and the backend wedges in 'slicing' at 0% forever.
+    Waiting the full timeout in that case just wastes 10 minutes."""
     def _start():
         initialize()
         _connect_backend_signals()
@@ -833,19 +906,40 @@ def run_slicing(wait=True, timeout=600):
     execute_on_main_thread(_start)
     if not wait:
         return {"started": True}
-    deadline = time.time() + float(timeout)
-    while time.time() < deadline:
+    started_at = time.time()
+    last_progress = -1.0
+    last_change = started_at
+    while True:
         with _state_lock:
             slicing = dict(_state["slicing"])
+        now = time.time()
         if slicing["state"] == "done":
             return {"started": True, "final_state": "done",
                     "progress": 1.0, "result": get_slicing_result()}
         if slicing["state"] == "error":
             raise RuntimeError("слайсинг завершился с ошибкой (проверьте журнал "
                                "слайсера и активную лицензию для 5D)")
+        if slicing["state"] == "slicing":
+            if abs(slicing.get("progress", 0.0) - last_progress) > 1e-6:
+                last_progress = slicing.get("progress", 0.0)
+                last_change = now
+            elif now - last_change >= stall_timeout:
+                return {
+                    "started": True, "final_state": "stalled",
+                    "progress": last_progress,
+                    "stalled_seconds": int(now - last_change),
+                    "hint": u"движок нарезки застрял без прогресса — вероятная "
+                            u"причина: сбой внешних инструментов 5D-конвейера "
+                            u"(openscad intersection, см. 'Failed to intersect "
+                            u"model!' в steslicer.log) или негерметичная "
+                            u"(не-watertight) модель. Помогает: перезапуск "
+                            u"слайсера, режим 3D (classic) вместо 5D, проверка "
+                            u"модели на замкнутость оболочки.",
+                }
+        if now - started_at >= float(timeout):
+            return {"started": True, "final_state": "timeout",
+                    "progress": slicing.get("progress", 0.0)}
         time.sleep(0.3)
-    return {"started": True, "final_state": "timeout",
-            "progress": slicing.get("progress", 0.0)}
 
 
 def get_slicing_state_snapshot():
@@ -941,10 +1035,25 @@ def set_results_dir_override(path):
 
 
 def export_project_and_gcode(model_name="model", output_dir=None):
-    def _export():
+    """Export project.3mf + result.gcode.
+
+    Two phases on purpose:
+    - 3MF needs the scene graph -> runs on the Qt main thread;
+    - GCodeWriter.write MUST run on a worker thread: its _getPreviewImage is
+      decorated @call_on_qt_thread (posts to the Qt thread and blocks until it
+      runs). Calling it ON the Qt thread waits for itself -> permanent freeze
+      (proved by a live hang dump: main thread stuck in Threading.wait under
+      GCodeWriter._getPreviewImage called from our main-thread export).
+    """
+    app = get_app()
+    if threading.current_thread() is app.getMainThread():
+        raise RuntimeError(
+            u"export_project_and_gcode нельзя вызывать в главном потоке Qt: "
+            u"GCodeWriter._getPreviewImage ждёт главный поток (само-дедлок)")
+
+    def _prepare():
         from UM.PluginRegistry import PluginRegistry
-        app = get_app()
-        scene = app.getController().getScene()
+        scene = get_app().getController().getScene()
         nodes = _iter_sliceable()
         if not nodes:
             raise RuntimeError("на столе нет моделей для экспорта")
@@ -958,33 +1067,34 @@ def export_project_and_gcode(model_name="model", output_dir=None):
         except OSError as e:
             raise RuntimeError("не создать папку %s: %s" % (directory, e))
 
-        # 3MF project: full workspace (scene root)
         project_path = os.path.join(directory, "project.3mf")
         writer_3mf = PluginRegistry.getInstance().getPluginObject("3MFWriter")
         with open(project_path, "wb") as stream:
             ok = writer_3mf.write(stream, [scene.getRoot()])
         if not ok:
             raise RuntimeError("3MFWriter вернул ошибку при записи project.3mf")
+        return project_path, os.path.join(directory, "result.gcode")
 
-        # G-code: from the last slicing result (scene.gcode_dict)
-        gcode_path = os.path.join(directory, "result.gcode")
-        writer_gcode = PluginRegistry.getInstance().getPluginObject("GCodeWriter")
-        with open(gcode_path, "w", encoding="utf-8", newline="\n") as stream:
-            ok = writer_gcode.write(stream, None)
-        if not ok:
-            raise RuntimeError("GCodeWriter вернул ошибку. Сначала выполните "
-                               "слайсинг (run_slicing) и дождитесь статуса done")
+    project_path, gcode_path = execute_on_main_thread(_prepare)
 
-        return {
-            "model_name": safe_name,
-            "directory": directory,
-            "project_3mf": project_path,
-            "gcode": gcode_path,
-            "project_3mf_bytes": os.path.getsize(project_path),
-            "gcode_bytes": os.path.getsize(gcode_path),
-            "hint": "положите скриншоты переписки chat_*.png рядом для сдачи",
-        }
-    return execute_on_main_thread(_export)
+    # G-code phase: caller thread (agent/HTTP worker) — see the docstring.
+    from UM.PluginRegistry import PluginRegistry
+    writer_gcode = PluginRegistry.getInstance().getPluginObject("GCodeWriter")
+    with open(gcode_path, "w", encoding="utf-8", newline="\n") as stream:
+        ok = writer_gcode.write(stream, None)
+    if not ok:
+        raise RuntimeError("GCodeWriter вернул ошибку. Сначала выполните "
+                           "слайсинг (run_slicing) и дождитесь статуса done")
+
+    return {
+        "model_name": os.path.basename(os.path.dirname(gcode_path)),
+        "directory": os.path.dirname(gcode_path),
+        "project_3mf": project_path,
+        "gcode": gcode_path,
+        "project_3mf_bytes": os.path.getsize(project_path),
+        "gcode_bytes": os.path.getsize(gcode_path),
+        "hint": "положите скриншоты переписки chat_*.png рядом для сдачи",
+    }
 
 
 # ----------------------------------------------------------------------------

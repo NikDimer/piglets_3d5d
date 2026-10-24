@@ -308,8 +308,7 @@ class AIAssistant(Extension):
         self.mcp = MCPServer()
         self.agent = None
         self._agent_lock = threading.Lock()
-        self._manager = None      # native QML manager
-        self._chat_window = None  # native QML window
+        self._manager = None      # native widgets UI (mascot + chat panel)
 
         self._init_preferences()
         # autostart HTTP server and native chat window once the app is up
@@ -378,52 +377,80 @@ class AIAssistant(Extension):
         self._start_server()
         webbrowser.open("http://127.0.0.1:8765/")
 
-    # ------------- native QML window -------------
+    # ------------- native widgets UI -------------
 
     def _create_native_ui(self):
+        """QWidgets-based chat (QPainter text path). The old QML window had
+        a hard-freeze risk: the Qt build shipped with the slicer recurses
+        inside Qt Quick text rendering (see DESKTOP_VERSION_POSTMORTEM.md).
+        Widgets draw text through QWidget.paintEvent and bypass that bug."""
         if self._manager is not None:
             return
         try:
-            from steslicer.SteSlicerApplication import SteSlicerApplication
-            from .AIAssistantManager import AIAssistantManager
-            app = SteSlicerApplication.getInstance()
-            self._manager = AIAssistantManager(self)
-
-            # preferred: floating Kali + chat INSIDE the main window
-            overlay_path = os.path.join(PLUGIN_DIR, "resources", "qml",
-                                        "AIAssistantOverlay.qml")
-            if os.path.isfile(overlay_path):
-                overlay = app.createQmlComponent(
-                    overlay_path, {"manager": self._manager})
-                main_window = app.getMainWindow()
-                if (overlay is not None and main_window is not None
-                        and hasattr(main_window, "contentItem")):
-                    overlay.setParentItem(main_window.contentItem())
-                    self._chat_window = overlay
-                    Logger.log("i", "[AI Assistant] in-app Kali overlay created")
-                    return
-
-            # fallback: separate native chat window
-            qml_path = os.path.join(PLUGIN_DIR, "resources", "qml",
-                                    "AIAssistantWindow.qml")
-            if os.path.isfile(qml_path):
-                self._chat_window = app.createQmlComponent(
-                    qml_path, {"manager": self._manager})
-                if self._chat_window is not None:
-                    self._manager.setDialog(self._chat_window)
-                    Logger.log("i", "[AI Assistant] native chat window created")
+            from .AIAssistantWidgets import WidgetsUI
+            self._manager = WidgetsUI(self)
+            self._manager.startup()
+            Logger.log("i", "[AI Assistant] QWidgets UI created (mascot in corner)")
         except Exception as e:
-            Logger.logException("e", "[AI Assistant] native UI failed: %s" % e)
+            self._manager = None
+            Logger.logException("e", "[AI Assistant] widgets UI failed: %s" % e)
 
     def showNativeChat(self):
         self._start_server()
         if self._manager is None:
             self._create_native_ui()
         if self._manager is not None:
-            self._manager.showChatWindow()
+            self._manager.show_panel()
         else:
-            # QML failed to load — fall back to the browser SPA
+            # widgets failed to load — fall back to the browser SPA
             self.showChat()
+
+    # ------------- helpers for the widgets UI -------------
+
+    def get_main_window_geometry(self):
+        """(x, y, w, h) of the slicer main window or None."""
+        try:
+            from steslicer.SteSlicerApplication import SteSlicerApplication
+            window = SteSlicerApplication.getInstance().getMainWindow()
+            if window is not None:
+                return (window.x(), window.y(), window.width(), window.height())
+        except Exception:
+            pass
+        return None
+
+    def is_main_window_active(self):
+        try:
+            from steslicer.SteSlicerApplication import SteSlicerApplication
+            window = SteSlicerApplication.getInstance().getMainWindow()
+            return bool(window is not None and window.isActive())
+        except Exception:
+            return True
+
+    def get_main_window_state(self):
+        """"normal" / "minimized" / "unknown" — owned windows hide on minimize."""
+        try:
+            from PyQt5.QtGui import QWindow
+            from steslicer.SteSlicerApplication import SteSlicerApplication
+            window = SteSlicerApplication.getInstance().getMainWindow()
+            if window is not None and window.visibility() == QWindow.Minimized:
+                return "minimized"
+        except Exception:
+            pass
+        return "normal"
+
+    def get_settings_values(self):
+        prefs = self.get_prefs()
+        return {
+            "api_url": prefs.getValue(PREF_API_URL) or DEFAULT_API_URL,
+            "api_key": self.get_api_key(),
+            "model_name": prefs.getValue(PREF_MODEL) or DEFAULT_MODEL_NAME,
+        }
+
+    def get_slicing_snapshot(self):
+        try:
+            return slicer_tools.get_slicing_state_snapshot()
+        except Exception:
+            return None
 
     def openResultsDir(self):
         path = slicer_tools.get_results_dir()

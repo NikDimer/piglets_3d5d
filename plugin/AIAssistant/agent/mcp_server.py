@@ -45,10 +45,10 @@ def _t_set_settings(args):
     settings = args.get("settings") or {}
     if not settings:
         raise MCPError("пустой словарь settings")
-    results = []
-    for key, value in settings.items():
-        results.append(T.write_setting(str(key), value))
-    return {"updated": results}
+    result = T.write_settings_batch(settings)
+    if not result["applied"]:
+        raise MCPError("не применён ни один ключ: %s" % result["rejected"])
+    return result
 
 
 def _t_set_printing_mode(args):
@@ -132,8 +132,14 @@ TOOLS = [
     {
         "name": "set_slicer_settings",
         "description": "Пакетная установка настроек печати (глобальных и экструдера), "
-                       "напр. {\"layer_height\":0.2,\"infill_sparse_density\":50,"
-                       "\"material_print_temperature\":240}.",
+                       "напр. {\"layer_height\":0.12,\"top_layers\":6,"
+                       "\"infill_sparse_density\":80,\"material_print_temperature\":290,"
+                       "\"material_bed_temperature\":110,\"speed_print\":40,"
+                       "\"cool_fan_enabled\":false}. Валидные ключи применяются всегда, "
+                       "битые возвращаются в rejected. Скорости — speed_* (speed_print, "
+                       "speed_infill, speed_wall), ретракты — retraction_* (retraction_amount), "
+                       "обдув — cool_fan_*, плотность поддержек — support_infill_rate. "
+                       "Режимные двойники (_classic/_cylindrical) пишутся автоматически.",
         "inputSchema": _schema({
             "settings": {"type": "object",
                          "description": "словарь ключ->значение настроек STE Slicer"},
