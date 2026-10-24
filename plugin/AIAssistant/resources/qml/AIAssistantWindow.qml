@@ -1,4 +1,4 @@
-// Native AI chat window inside STE Slicer — light "Pascal" theme.
+// Native AI chat window inside STE Slicer — light "Kali" theme.
 // Palette from the team's mockup: off-white #F7F6F2, white cards,
 // chameleon lime #8DC63F / teal #2EA3A8 accents. QtQuick.Controls 1.4.
 import QtQuick 2.2
@@ -136,76 +136,112 @@ Window
 
                 Button
                 {
-                    width: 56; height: 56
-                    tooltip: "Открыть чат в браузере (полный интерфейс)"
+                    text: "Открыть в браузере"
+                    tooltip: "Полная веб-версия чата"
                     onClicked: if (manager) manager.openWebChat()
 
                     style: ButtonStyle
                     {
+                        padding { left: 18; right: 18; top: 12; bottom: 12 }
                         background: Rectangle
                         {
-                            radius: 12
+                            implicitHeight: 56
+                            radius: 14
                             color: control.hovered ? cLimeSoft : "#fbfaf6"
                             border.width: 1
                             border.color: control.hovered ? cLime : cBorder
-                            Text { anchors.centerIn: parent; text: "🌐"; font.pixelSize: 26; color: cText }
+                        }
+                        label: Text
+                        {
+                            text: control.text
+                            color: control.hovered ? cLimeDeep : cText
+                            font.pixelSize: 22
+                            verticalAlignment: Text.AlignVCenter
+                            horizontalAlignment: Text.AlignHCenter
                         }
                     }
                 }
 
                 Button
                 {
-                    width: 56; height: 56
-                    tooltip: "Очистить диалог"
+                    text: "Очистить чат"
+                    tooltip: "Стереть историю диалога"
                     onClicked: if (manager) manager.clearChat()
 
                     style: ButtonStyle
                     {
+                        padding { left: 18; right: 18; top: 12; bottom: 12 }
                         background: Rectangle
                         {
-                            radius: 12
+                            implicitHeight: 56
+                            radius: 14
                             color: control.hovered ? cLimeSoft : "#fbfaf6"
                             border.width: 1
                             border.color: control.hovered ? cLime : cBorder
-                            Text { anchors.centerIn: parent; text: "🗑"; font.pixelSize: 26; color: cText }
+                        }
+                        label: Text
+                        {
+                            text: control.text
+                            color: control.hovered ? cLimeDeep : cText
+                            font.pixelSize: 22
+                            verticalAlignment: Text.AlignVCenter
+                            horizontalAlignment: Text.AlignHCenter
                         }
                     }
                 }
 
                 Button
                 {
-                    width: 56; height: 56
-                    tooltip: "Настройки API"
+                    text: "Настройки"
+                    tooltip: "API-ключ, адрес и модель нейросети"
                     onClicked: chatWindow.showSettings = !chatWindow.showSettings
 
                     style: ButtonStyle
                     {
+                        padding { left: 18; right: 18; top: 12; bottom: 12 }
                         background: Rectangle
                         {
-                            radius: 12
+                            implicitHeight: 56
+                            radius: 14
                             color: chatWindow.showSettings ? cLimeSoft : (control.hovered ? cLimeSoft : "#fbfaf6")
                             border.width: 1
                             border.color: chatWindow.showSettings ? cLime : (control.hovered ? cLime : cBorder)
-                            Text { anchors.centerIn: parent; text: "⚙"; font.pixelSize: 30; color: chatWindow.showSettings || control.hovered ? cLimeDeep : cDim }
+                        }
+                        label: Text
+                        {
+                            text: control.text
+                            color: chatWindow.showSettings || control.hovered ? cLimeDeep : cText
+                            font.pixelSize: 22
+                            verticalAlignment: Text.AlignVCenter
+                            horizontalAlignment: Text.AlignHCenter
                         }
                     }
                 }
 
                 Button
                 {
-                    width: 56; height: 56
-                    tooltip: "Закрыть окно"
+                    text: "Закрыть"
+                    tooltip: "Закрыть окно чата"
                     onClicked: if (manager) manager.hideChatWindow()
 
                     style: ButtonStyle
                     {
+                        padding { left: 18; right: 18; top: 12; bottom: 12 }
                         background: Rectangle
                         {
-                            radius: 12
+                            implicitHeight: 56
+                            radius: 14
                             color: control.hovered ? "#fbe7e7" : "#fbfaf6"
-                            border.width: control.hovered ? 1 : 1
+                            border.width: 1
                             border.color: control.hovered ? cDanger : cBorder
-                            Text { anchors.centerIn: parent; text: "✕"; font.pixelSize: 28; color: control.hovered ? cDanger : cDim }
+                        }
+                        label: Text
+                        {
+                            text: control.text
+                            color: control.hovered ? cDanger : cText
+                            font.pixelSize: 22
+                            verticalAlignment: Text.AlignVCenter
+                            horizontalAlignment: Text.AlignHCenter
                         }
                     }
                 }
@@ -296,7 +332,6 @@ Window
                     Button
                     {
                         text: "Сохранить"
-                        Layout.preferredWidth: 160
                         onClicked:
                         {
                             manager.saveSettings(apiKeyInput.text, baseUrlInput.text, modelInput.text)
@@ -304,8 +339,17 @@ Window
                         }
                         style: ButtonStyle
                         {
-                            background: Rectangle { color: control.hovered ? "#96cf52" : cLime; radius: 12 }
-                            label: Text { text: control.text; color: "#ffffff"; horizontalAlignment: Text.AlignHCenter; font.pixelSize: 22; font.bold: true }
+                            padding { left: 22; right: 22; top: 12; bottom: 12 }
+                            background: Rectangle { implicitHeight: 56; color: control.hovered ? "#96cf52" : cLime; radius: 14 }
+                            label: Text
+                            {
+                                text: control.text
+                                color: "#ffffff"
+                                font.pixelSize: 22
+                                font.bold: true
+                                verticalAlignment: Text.AlignVCenter
+                                horizontalAlignment: Text.AlignHCenter
+                            }
                         }
                     }
                 }
@@ -349,16 +393,17 @@ Window
 
                         delegate: Button
                         {
-                            height: 48
                             text: modelData.label
                             enabled: manager && !manager.isThinking
                             onClicked: manager.quickAction(modelData.id)
 
                             style: ButtonStyle
                             {
+                                padding { left: 20; right: 20; top: 10; bottom: 10 }
                                 background: Rectangle
                                 {
-                                    radius: 24
+                                    implicitHeight: 52
+                                    radius: 26
                                     color: control.hovered ? cLimeSoft : cBg
                                     border.color: control.hovered ? cLime : cBorder2
                                     border.width: 1
@@ -368,7 +413,8 @@ Window
                                     text: control.text
                                     color: control.hovered ? cLimeDeep : cDim
                                     font.pixelSize: 22
-                                    anchors.centerIn: parent
+                                    verticalAlignment: Text.AlignVCenter
+                                    horizontalAlignment: Text.AlignHCenter
                                 }
                             }
                         }
@@ -464,31 +510,34 @@ Window
 
                             Rectangle
                             {
+                                id: bubbleRect
                                 anchors.right: modelData.role === "user" ? parent.right : undefined
                                 anchors.left: modelData.role !== "user" ? parent.left : undefined
                                 width: Math.min(contentCol.implicitWidth + 26, messageListView.width * 0.9)
                                 height: contentCol.implicitHeight + 18
                                 radius: 18
 
-                                // tail corners: assistant — top-left, user — top-right
+                                // tail corners: assistant — top-left (gradient top color), user — top-right (white)
                                 Rectangle
                                 {
-                                    visible: modelData.role !== "user"
+                                    visible: modelData.role === "assistant"
                                     anchors.top: parent.top; anchors.left: parent.left
-                                    width: 18; height: 18; color: parent.color
+                                    width: 18; height: 18; color: "#65b04b"
                                 }
                                 Rectangle
                                 {
                                     visible: modelData.role === "user"
                                     anchors.top: parent.top; anchors.right: parent.right
-                                    width: 18; height: 18; color: parent.color
+                                    width: 18; height: 18; color: cCard
                                 }
 
+                                // messenger gradient like the design reference
+                                gradient: modelData.role === "assistant" ? bubbleGradient : null
                                 color: {
-                                    if (modelData.role === "user") return cLime
+                                    if (modelData.role === "user") return cCard
                                     if (modelData.role === "tool") return cCard
                                     if (modelData.role === "error") return "#fdf1f1"
-                                    return cCard
+                                    return "#ffffff"
                                 }
 
                                 border.color: {
@@ -496,7 +545,15 @@ Window
                                     if (modelData.role === "error") return cDanger
                                     return cBorder
                                 }
-                                border.width: 1
+                                border.width: modelData.role === "assistant" ? 0 : 1
+
+                                Gradient
+                                {
+                                    id: bubbleGradient
+                                    GradientStop { position: 0.0; color: "#65b04b" }
+                                    GradientStop { position: 0.52; color: "#2e9e8f" }
+                                    GradientStop { position: 1.0; color: "#1f7fa8" }
+                                }
 
                                 Column
                                 {
@@ -515,15 +572,57 @@ Window
                                             text: {
                                                 if (modelData.role === "tool") return "🔧 " + (modelData.toolName || "инструмент")
                                                 if (modelData.role === "error") return "⚠ Ошибка"
-                                                return "🦎 Паскаль"
+                                                return "🦎 Кали"
                                             }
                                             color: {
                                                 if (modelData.role === "tool") return cTeal
                                                 if (modelData.role === "error") return cDanger
-                                                return cLimeDeep
+                                                return "#ffffff"
                                             }
                                             font.pixelSize: 20
                                             font.bold: true
+                                        }
+
+                                        // copy button for assistant replies
+                                        Button
+                                        {
+                                            visible: modelData.role === "assistant"
+                                            tooltip: "Скопировать ответ в буфер"
+                                            onClicked:
+                                            {
+                                                if (manager) manager.copyToClipboard(modelData.content || "")
+                                                copyBtnLabel.text = "✓ Скопировано"
+                                                copyReset.restart()
+                                            }
+
+                                            style: ButtonStyle
+                                            {
+                                                padding { left: 12; right: 12; top: 6; bottom: 6 }
+                                                background: Rectangle
+                                                {
+                                                    implicitHeight: 36
+                                                    radius: 10
+                                                    color: control.hovered ? "rgba(255,255,255,0.30)" : "rgba(255,255,255,0.16)"
+                                                    border.width: 1
+                                                    border.color: control.hovered ? "#ffffff" : "rgba(255,255,255,0.45)"
+                                                }
+                                                label: Text
+                                                {
+                                                    id: copyBtnLabel
+                                                    text: "⧉ Копировать"
+                                                    color: "#ffffff"
+                                                    font.pixelSize: 18
+                                                    verticalAlignment: Text.AlignVCenter
+                                                    horizontalAlignment: Text.AlignHCenter
+                                                }
+                                            }
+
+                                            Timer
+                                            {
+                                                id: copyReset
+                                                interval: 1600
+                                                onTriggered: copyBtnLabel.text = "⧉ Копировать"
+                                            }
                                         }
                                     }
 
@@ -531,7 +630,7 @@ Window
                                     {
                                         width: parent.width
                                         text: chatWindow.stripMd(modelData.content || "")
-                                        color: modelData.role === "user" ? "#ffffff" : cText
+                                        color: modelData.role === "assistant" ? "#ffffff" : cText
                                         font.pixelSize: 24
                                         wrapMode: TextEdit.Wrap
                                         readOnly: true
@@ -622,7 +721,7 @@ Window
         {
             Layout.fillWidth: true
             Layout.fillHeight: false
-            implicitHeight: pascalColumn.implicitHeight + 24
+            implicitHeight: kaliColumn.implicitHeight + 24
             color: cCard
 
             Rectangle { anchors.top: parent.top; width: parent.width; height: 1; color: cBorder }
@@ -633,10 +732,10 @@ Window
                 anchors.margins: 12
                 spacing: 12
 
-                // Pascal: mascot + speech bubble (bottom-left)
+                // Kali: mascot + speech bubble (bottom-left)
                 ColumnLayout
                 {
-                    id: pascalColumn
+                    id: kaliColumn
                     spacing: 8
                     Layout.preferredWidth: 420
                     Layout.maximumWidth: 460
@@ -644,16 +743,16 @@ Window
 
                     Rectangle
                     {
-                        id: pascalSpeechBubble
+                        id: kaliSpeechBubble
                         Layout.fillWidth: true
                         implicitHeight: speechText.implicitHeight + 34
                         color: cCard
                         border.color: cLime
                         border.width: 2
                         radius: 16
-                        visible: manager && manager.pascalSpeech.length > 0
+                        visible: manager && manager.kaliSpeech.length > 0
 
-                        // speech tail pointing down-left to Pascal
+                        // speech tail pointing down-left to Kali
                         Canvas
                         {
                             id: tail
@@ -688,7 +787,7 @@ Window
 
                             Text
                             {
-                                text: "🦎 Паскаль"
+                                text: "🦎 Кали"
                                 color: cLimeDeep
                                 font.pixelSize: 20
                                 font.bold: true
@@ -698,7 +797,7 @@ Window
                             {
                                 id: speechText
                                 width: parent.width
-                                text: manager ? chatWindow.stripMd(manager.pascalSpeech) : ""
+                                text: manager ? chatWindow.stripMd(manager.kaliSpeech) : ""
                                 color: cText
                                 font.pixelSize: 22
                                 wrapMode: TextEdit.Wrap
@@ -710,7 +809,7 @@ Window
 
                     AnimatedImage
                     {
-                        id: pascalGif
+                        id: kaliGif
                         Layout.alignment: Qt.AlignLeft
                         width: 132; height: 176
                         fillMode: Image.PreserveAspectCrop
@@ -726,14 +825,14 @@ Window
                         {
                             anchors.fill: parent
                             cursorShape: Qt.PointingHandCursor
-                            onClicked: pascalBounce.start()
+                            onClicked: kaliBounce.start()
                         }
 
                         SequentialAnimation
                         {
-                            id: pascalBounce
-                            NumberAnimation { target: pascalGif; property: "scale"; to: 1.12; duration: 140 }
-                            NumberAnimation { target: pascalGif; property: "scale"; to: 1.0; duration: 140 }
+                            id: kaliBounce
+                            NumberAnimation { target: kaliGif; property: "scale"; to: 1.12; duration: 140 }
+                            NumberAnimation { target: kaliGif; property: "scale"; to: 1.0; duration: 140 }
                         }
                     }
                 }
@@ -752,19 +851,28 @@ Window
 
                         Button
                         {
-                            width: 64; height: 64
-                            tooltip: "Прикрепить 3D-модель (STL/OBJ/3MF) или изображение"
+                            text: "Прикрепить файл"
+                            tooltip: "3D-модель (STL/OBJ/3MF) или изображение (JPG/PNG)"
                             onClicked: fileDialog.open()
 
                             style: ButtonStyle
                             {
+                                padding { left: 18; right: 18; top: 12; bottom: 12 }
                                 background: Rectangle
                                 {
+                                    implicitHeight: 64
                                     radius: 16
                                     color: control.hovered ? cLimeSoft : cBg
                                     border.color: control.hovered ? cLime : cBorder2
                                     border.width: 2
-                                    Text { anchors.centerIn: parent; text: "📎"; font.pixelSize: 30; color: control.hovered ? cLimeDeep : cDim }
+                                }
+                                label: Text
+                                {
+                                    text: "📎 " + control.text
+                                    color: control.hovered ? cLimeDeep : cText
+                                    font.pixelSize: 22
+                                    verticalAlignment: Text.AlignVCenter
+                                    horizontalAlignment: Text.AlignHCenter
                                 }
                             }
                         }
@@ -802,7 +910,6 @@ Window
 
                         Button
                         {
-                            width: 180; height: 64
                             text: manager && manager.isThinking ? "Думает…" : "Отправить"
                             enabled: manager && !manager.isThinking && (chatInput.text.trim().length > 0 || manager.attachedFiles.length > 0)
 
@@ -814,8 +921,10 @@ Window
 
                             style: ButtonStyle
                             {
+                                padding { left: 26; right: 26; top: 12; bottom: 12 }
                                 background: Rectangle
                                 {
+                                    implicitHeight: 64
                                     radius: 16
                                     color: {
                                         if (!control.enabled) return "#e9e7df"
@@ -823,7 +932,15 @@ Window
                                         return cLime
                                     }
                                 }
-                                label: Text { text: control.text; color: control.enabled ? "#ffffff" : "#a8ab9e"; horizontalAlignment: Text.AlignHCenter; font.pixelSize: 24; font.bold: true }
+                                label: Text
+                                {
+                                    text: control.text
+                                    color: control.enabled ? "#ffffff" : "#a8ab9e"
+                                    font.pixelSize: 24
+                                    font.bold: true
+                                    verticalAlignment: Text.AlignVCenter
+                                    horizontalAlignment: Text.AlignHCenter
+                                }
                             }
                         }
                     }
@@ -831,7 +948,7 @@ Window
                     Text
                     {
                         Layout.fillWidth: true
-                        text: "Enter — отправить · Паскаль сам загрузит модель, выберет режим 3D/5D и прослайсит"
+                        text: "Enter — отправить · Кали сам загрузит модель, выберет режим 3D/5D и прослайсит"
                         color: cDim
                         font.pixelSize: 18
                         horizontalAlignment: Text.AlignHCenter

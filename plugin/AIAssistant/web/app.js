@@ -1,6 +1,6 @@
 /* STE Slicer AI Assistant — SPA logic (vanilla JS, no dependencies).
    Polling transport: /api/events + /api/status.
-   Mascot "Pascal" the chameleon: idle (waves) / think / happy states. */
+   Mascot "Kali" the chameleon: idle (waves) / think / happy states. */
 
 "use strict";
 
@@ -15,7 +15,7 @@ const state = {
 };
 
 /* ------------------------------------------------------------------ */
-/* Pascal the chameleon — bottom-left speaking mascot                  */
+/* Kali the chameleon — bottom-left speaking mascot                  */
 /* ------------------------------------------------------------------ */
 
 const MASCOT = {
@@ -28,9 +28,9 @@ let mascotState = "idle";
 let happyTimer = null;
 let speechTimer = null;
 
-function pascalSay(text, autohideMs) {
-  const bubble = $("pascal-speech");
-  const textField = $("pascal-speech-text");
+function kaliSay(text, autohideMs) {
+  const bubble = $("kali-speech");
+  const textField = $("kali-speech-text");
   if (!bubble || !textField) return;
   textField.textContent = text;
   bubble.classList.add("show");
@@ -44,17 +44,17 @@ function setMascot(newState) {
   if (!MASCOT[newState]) newState = "idle";
   mascotState = newState;
   for (const name of ["idle", "think", "happy"]) {
-    const el = $("pascal-" + name);
+    const el = $("kali-" + name);
     if (el) el.classList.toggle("show", name === newState);
   }
-  pascalSay(MASCOT[newState].speech, newState === "idle" ? 7000 : 0);
+  kaliSay(MASCOT[newState].speech, newState === "idle" ? 7000 : 0);
 }
 
 function mascotHappyTemporarily(replyText) {
   setMascot("happy");
   if (replyText) {
     const snippet = String(replyText).replace(/[#*`>|-]/g, " ").replace(/\s+/g, " ").trim();
-    pascalSay(snippet.length > 150 ? snippet.slice(0, 150) + "…" : snippet, 6000);
+    kaliSay(snippet.length > 150 ? snippet.slice(0, 150) + "…" : snippet, 6000);
   }
   clearTimeout(happyTimer);
   happyTimer = setTimeout(() => setMascot("idle"), 4500);
@@ -185,10 +185,44 @@ function addBotMessage(text) {
   wrap.className = "msg bot";
   wrap.innerHTML =
     '<div class="avatar">' + mascotVideoTag(mascotState === "happy" ? "happy" : mascotState === "think" ? "think" : "idle") + "</div>" +
-    '<div class="bubble">' + renderMarkdown(text) + "</div>";
+    '<div class="bubble"><button class="copy-btn" title="Скопировать ответ">⧉ Копировать</button>' +
+    renderMarkdown(text) + "</div>";
+  wrap.querySelector(".copy-btn").addEventListener("click", function () {
+    copyText(text, this);
+  });
   chat.appendChild(wrap);
   scrollDown();
   return wrap;
+}
+
+function copyText(text, btn) {
+  const done = () => {
+    if (btn) {
+      const old = btn.innerHTML;
+      btn.innerHTML = "✓ Скопировано";
+      btn.classList.add("ok");
+      setTimeout(() => { btn.innerHTML = old; btn.classList.remove("ok"); }, 1600);
+    }
+    toast("Ответ скопирован в буфер");
+    mascotHappyTemporarily();
+  };
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).then(done, () => fallbackCopy(text, done));
+  } else {
+    fallbackCopy(text, done);
+  }
+}
+
+function fallbackCopy(text, done) {
+  const ta = document.createElement("textarea");
+  ta.value = text;
+  ta.style.position = "fixed";
+  ta.style.opacity = "0";
+  document.body.appendChild(ta);
+  ta.select();
+  try { document.execCommand("copy"); done(); }
+  catch (e) { toast("Не удалось скопировать", true); }
+  document.body.removeChild(ta);
 }
 
 function addTypingIndicator() {
@@ -197,7 +231,7 @@ function addTypingIndicator() {
   wrap.id = "typing";
   wrap.innerHTML =
     '<div class="avatar">' + mascotVideoTag("think") + "</div>" +
-    '<div class="bubble"><span class="typing"><i></i><i></i><i></i></span> <span style="color:#93a1b3;font-size:14px">Паскаль работает со слайсером…</span></div>';
+    '<div class="bubble"><span class="typing"><i></i><i></i><i></i></span> <span style="color:#93a1b3;font-size:14px">Кали работает со слайсером…</span></div>';
   chat.appendChild(wrap);
   scrollDown();
 }
@@ -304,7 +338,7 @@ async function sendMessage() {
   const input = $("input");
   const text = input.value.trim();
   if (!text && !state.attachments.length) return;
-  if (state.busy) { toast("Паскаль ещё занят предыдущей задачей", true); return; }
+  if (state.busy) { toast("Кали ещё занят предыдущей задачей", true); return; }
 
   const attachments = state.attachments.slice();
   addUserMessage(text || "(файлы)", attachments);
@@ -363,7 +397,7 @@ function handleEvent(ev) {
   if (ev.type === "tool_call") {
     state.pendingToolCard = addToolCard(d.name, d.arguments);
     setMascot("think");
-    pascalSay("Работаю со слайсером: " + d.name + "…");
+    kaliSay("Работаю со слайсером: " + d.name + "…");
   } else if (ev.type === "tool_result") {
     finishToolCard(state.pendingToolCard, d.ok, d.summary + (d.duration_ms ? "\n⏱ " + d.duration_ms + " мс" : ""), d.duration_ms || 0);
     state.pendingToolCard = null;
@@ -600,8 +634,8 @@ function toast(message, isError) {
 
 setMascot("idle");
 
-document.querySelectorAll("#pascal video").forEach((v) => {
-  v.addEventListener("click", () => pascalSay(MASCOT[mascotState].speech, 6000));
+document.querySelectorAll("#kali video").forEach((v) => {
+  v.addEventListener("click", () => kaliSay(MASCOT[mascotState].speech, 6000));
 });
 
 loadHistory().then(() => {

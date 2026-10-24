@@ -27,7 +27,7 @@ class AIAssistantManager(QObject):
     statusChanged = pyqtSignal()
     thinkingChanged = pyqtSignal()
     happyChanged = pyqtSignal()
-    pascalSpeechChanged = pyqtSignal()
+    kaliSpeechChanged = pyqtSignal()
     slicingChanged = pyqtSignal()
     chatWindowVisibleChanged = pyqtSignal()
     attachedFilesChanged = pyqtSignal()
@@ -41,7 +41,7 @@ class AIAssistantManager(QObject):
         self._is_thinking = False
         self._is_happy = False
         self._status_text = u"Готов к работе"
-        self._pascal_speech = (u"Привет! Я Паскаль 🦎 Опишите задачу и приложите "
+        self._kali_speech = (u"Привет! Я Кали 🦎 Опишите задачу и приложите "
                                u"модель — я всё настрою сам.")
         self._status_type = "ready"  # ready / thinking / processing / error
         self._chat_window_visible = False
@@ -95,9 +95,9 @@ class AIAssistantManager(QObject):
     def isHappy(self):
         return self._is_happy
 
-    @pyqtProperty(str, notify=pascalSpeechChanged)
-    def pascalSpeech(self):
-        return self._pascal_speech
+    @pyqtProperty(str, notify=kaliSpeechChanged)
+    def kaliSpeech(self):
+        return self._kali_speech
 
     @pyqtProperty(str, notify=statusChanged)
     def statusText(self):
@@ -229,6 +229,16 @@ class AIAssistantManager(QObject):
         except Exception as e:
             Logger.log("e", "[AI Assistant] saveSettings failed: %s" % e)
             self._set_status(u"Ошибка сохранения настроек", "error")
+
+    @pyqtSlot(str)
+    def copyToClipboard(self, text):
+        """Copy an assistant message to the system clipboard."""
+        try:
+            from PyQt5.QtWidgets import QApplication
+            QApplication.clipboard().setText(str(text))
+            self._set_status(u"Скопировано в буфер ✓", "ready")
+        except Exception as e:
+            Logger.log("w", "[AI Assistant] clipboard failed: %s" % e)
 
     @pyqtSlot(str)
     def quickAction(self, action_id):
@@ -387,9 +397,9 @@ class AIAssistantManager(QObject):
             self.happyChanged.emit()
 
     def _say(self, text):
-        if text and text != self._pascal_speech:
-            self._pascal_speech = text
-            self.pascalSpeechChanged.emit()
+        if text and text != self._kali_speech:
+            self._kali_speech = text
+            self.kaliSpeechChanged.emit()
 
     def _set_status(self, text, status_type):
         self._status_text = text

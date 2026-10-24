@@ -298,7 +298,7 @@ class AIAssistant(Extension):
     def __init__(self):
         super().__init__()
         self.setMenuName("AI Assistant")
-        self.addMenuItem("Открыть AI-чат в окне приложения", self.showNativeChat)
+        self.addMenuItem("Чат Кали (в окне слайсера)", self.showNativeChat)
         self.addMenuItem("Открыть AI-чат в браузере", self.showChat)
         self.addMenuItem("Открыть папку результатов", self.openResultsDir)
 
@@ -388,6 +388,22 @@ class AIAssistant(Extension):
             from .AIAssistantManager import AIAssistantManager
             app = SteSlicerApplication.getInstance()
             self._manager = AIAssistantManager(self)
+
+            # preferred: floating Kali + chat INSIDE the main window
+            overlay_path = os.path.join(PLUGIN_DIR, "resources", "qml",
+                                        "AIAssistantOverlay.qml")
+            if os.path.isfile(overlay_path):
+                overlay = app.createQmlComponent(
+                    overlay_path, {"manager": self._manager})
+                main_window = app.getMainWindow()
+                if (overlay is not None and main_window is not None
+                        and hasattr(main_window, "contentItem")):
+                    overlay.setParentItem(main_window.contentItem())
+                    self._chat_window = overlay
+                    Logger.log("i", "[AI Assistant] in-app Kali overlay created")
+                    return
+
+            # fallback: separate native chat window
             qml_path = os.path.join(PLUGIN_DIR, "resources", "qml",
                                     "AIAssistantWindow.qml")
             if os.path.isfile(qml_path):
