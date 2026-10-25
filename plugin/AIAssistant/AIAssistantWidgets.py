@@ -18,11 +18,10 @@
 # Python 3.5 compatible; depends only on PyQt5 (already shipped with the
 # slicer) and the extension object passed in.
 
-import json
 import os
-
 from PyQt5.QtCore import Qt, QTimer, QObject, QPoint, QEvent, pyqtSignal
-from PyQt5.QtGui import QMovie, QColor, QPainter, QPen, QPixmap, QFontMetrics
+from PyQt5.QtGui import (QBrush, QColor, QFontMetrics, QLinearGradient,
+                         QMovie, QPainter, QPainterPath, QPen, QPixmap)
 from PyQt5.QtWidgets import (
     QApplication, QFrame, QLabel, QPushButton, QTextEdit, QTextBrowser,
     QVBoxLayout, QHBoxLayout, QFileDialog, QProgressBar, QDialog, QLineEdit,
@@ -163,7 +162,7 @@ def md_to_html(md):
             if table_rows is None:
                 close_list()
                 table_rows = [[]]
-                html.append('<table width="100%%" cellspacing="0" cellpadding="4" '
+                html.append('<table width="100%%" cellspacing="0" cellpadding="8" '
                             'bgcolor="%s"><thead><tr>' % C_CARD)
                 for c in cells:
                     html.append('<th align="left" bgcolor="%s"><b>%s</b></th>'
@@ -239,30 +238,20 @@ class MascotWidget(QFrame):
 
     clicked = pyqtSignal()
 
-    STATE_BORDER = {"idle": C_BORDER2, "think": C_LIME, "happy": C_TEAL}
-
     def __init__(self):
         super(MascotWidget, self).__init__(None,
                                            Qt.Tool | Qt.FramelessWindowHint)
         self.setAttribute(Qt.WA_TranslucentBackground, True)
-        self.setFixedSize(158, 196)
+        self.setFixedSize(210, 262)
         self._drag_offset = None
         self._state = "idle"
-        self._speech = u""
         self._static = False
 
         self._movie_label = QLabel(self)
-        self._movie_label.setGeometry(14, 30, 130, 158)
+        self._movie_label.setGeometry(19, 40, 173, 211)
         self._movie_label.setAlignment(Qt.AlignCenter)
         self._movie_label.setScaledContents(True)   # GIFs are 240x320
         self._movie = None
-
-        self._badge = QLabel(self)
-        self._badge.setAlignment(Qt.AlignCenter)
-        self._badge.setStyleSheet(
-            "background:%s; border:2px solid %s; border-radius:12px; "
-            "color:%s; font-size:11px;" % (C_CARD, C_LIME, C_TEXT))
-        self._badge.hide()
 
         self.set_state("idle")
 
@@ -289,32 +278,7 @@ class MascotWidget(QFrame):
         self._static = not movie.isValid()
         self.update()
 
-    def set_speech(self, text):
-        text = (text or "").strip()
-        self._speech = text
-        if not text:
-            self._badge.hide()
-            return
-        metrics = QFontMetrics(self._badge.font())
-        available = self.width() - 16
-        text = metrics.elidedText(text if len(text) <= 60 else text[:60] + u"…",
-                                  Qt.ElideRight, available)
-        self._badge.setText(text)
-        self._badge.setFixedHeight(24)
-        badge_w = min(metrics.width(text) + 26, available)
-        self._badge.setGeometry((self.width() - badge_w) // 2, 3,
-                                badge_w, 24)
-        self._badge.show()
-        self._badge.raise_()
-
-    # --- painting / interaction ---
-
-    def paintEvent(self, event):
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.Antialiasing)
-        painter.setPen(QPen(QColor(self.STATE_BORDER.get(self._state, C_BORDER2)), 3))
-        painter.setBrush(QColor(C_CARD))
-        painter.drawRoundedRect(1, 1, self.width() - 3, self.height() - 3, 18, 18)
+    # --- interaction ---
 
     def mousePressEvent(self, event):
         if event.button() == Qt.LeftButton:
@@ -340,6 +304,74 @@ class MascotWidget(QFrame):
 
 
 # ----------------------------------------------------------------------------
+# speech bubble (chat-style, floats to the left of the mascot)
+# ----------------------------------------------------------------------------
+
+class SpeechBubble(QFrame):
+    """The mascot's speech as a messenger-style message floating ABOVE the
+    chameleon: lime->teal->blue gradient, white text, tail pointing down
+    at him."""
+
+    TAIL = 12
+    BODY_H = 46
+    MAX_TEXT = 430
+
+    def __init__(self):
+        super(SpeechBubble, self).__init__(None,
+                                           Qt.Tool | Qt.FramelessWindowHint)
+        self.setAttribute(Qt.WA_TranslucentBackground, True)
+        self.setAttribute(Qt.WA_ShowWithoutActivating, True)
+        self._label = QLabel(self)
+        self._label.setStyleSheet(
+            "color:#ffffff; font-size:20px; font-weight:600; "
+            "background:transparent;")
+        self._label.setAlignment(Qt.AlignVCenter | Qt.AlignLeft)
+        self._timer = QTimer(self)
+        self._timer.setSingleShot(True)
+        self._timer.timeout.connect(self.hide)
+        self.hide()
+
+    def say(self, text, sticky=False):
+        text = (text or u"").strip()
+        if not text:
+            self._timer.stop()
+            self.hide()
+            return
+        metrics = QFontMetrics(self._label.font())
+        shown = metrics.elidedText(
+            text if len(text) <= 90 else text[:90] + u"…",
+            Qt.ElideRight, self.MAX_TEXT)
+        self._label.setText(shown)
+        text_w = min(metrics.width(shown), self.MAX_TEXT)
+        self._label.setGeometry(20, 0, text_w + 4, self.BODY_H)
+        self.setFixedSize(text_w + 40, self.BODY_H + self.TAIL)
+        if sticky:
+            self._timer.stop()      # e.g. the greeting: stays until replaced
+        else:
+            self._timer.start(9000)
+        self.show()
+        self.raise_()
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        w = self.width()
+        h = self.BODY_H
+        gradient = QLinearGradient(0, 0, w, 0)
+        gradient.setColorAt(0.0, QColor("#65b04b"))
+        gradient.setColorAt(0.52, QColor("#2e9e8f"))
+        gradient.setColorAt(1.0, QColor("#1f7fa8"))
+        path = QPainterPath()
+        path.addRoundedRect(0, 0, w, h, 16, 16)
+        cx = w / 2.0
+        path.moveTo(cx - 9, h - 1)
+        path.lineTo(cx, h + self.TAIL - 1)
+        path.lineTo(cx + 9, h - 1)
+        path.closeSubpath()
+        painter.fillPath(path, QBrush(gradient))
+
+
+# ----------------------------------------------------------------------------
 # chat panel
 # ----------------------------------------------------------------------------
 
@@ -356,22 +388,22 @@ class ChatPanel(QFrame):
         super(ChatPanel, self).__init__(None,
                                         Qt.Tool | Qt.FramelessWindowHint)
         self.setAttribute(Qt.WA_TranslucentBackground, True)
-        self.setFixedSize(500, 660)
+        self.setFixedSize(1000, 1320)
         self._drag_offset = None
         self._attachments = []      # [(name, path)]
         self._last_assistant_text = u""
 
         self.setStyleSheet("""
-            QLabel { color: %s; font-size: 12px; }
+            QLabel { color: %s; font-size: 24px; }
             QPushButton {
-                background: %s; border: 1px solid %s; border-radius: 9px;
-                padding: 6px 12px; color: %s; font-size: 12px;
+                background: %s; border: 1px solid %s; border-radius: 18px;
+                padding: 12px 24px; color: %s; font-size: 24px;
             }
             QPushButton:hover { background: %s; border-color: %s; color: %s; }
             QPushButton:disabled { color: #a8ab9e; background: #efede5; }
             QPushButton#sendBtn {
                 background: %s; color: #ffffff; font-weight: bold; border: none;
-                border-radius: 10px; padding: 8px 16px;
+                border-radius: 20px; padding: 16px 32px;
             }
             QPushButton#sendBtn:hover { background: #96cf52; }
             QPushButton#sendBtn:disabled { background: #e9e7df; }
@@ -381,8 +413,8 @@ class ChatPanel(QFrame):
                C_LIME, C_DANGER, C_DANGER))
 
         root = QVBoxLayout(self)
-        root.setContentsMargins(12, 12, 12, 12)
-        root.setSpacing(8)
+        root.setContentsMargins(24, 24, 24, 24)
+        root.setSpacing(16)
 
         root.addWidget(self._build_header())
         root.addWidget(self._build_presets())
@@ -394,6 +426,16 @@ class ChatPanel(QFrame):
 
         self._add_intro()
 
+    def paintEvent(self, event):
+        # one solid white card behind every section: no see-through gaps
+        # between header / transcript / composer
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        painter.setPen(QPen(QColor(C_BORDER2), 2))
+        painter.setBrush(QColor(C_CARD))
+        painter.drawRoundedRect(1, 1, self.width() - 2, self.height() - 2,
+                                24, 24)
+
     # --- builders ---
 
     def _build_header(self):
@@ -402,20 +444,20 @@ class ChatPanel(QFrame):
             "QFrame { background: %s; border: 1px solid %s; border-radius: 12px; }"
             % (C_CARD, C_BORDER))
         layout = QHBoxLayout(header)
-        layout.setContentsMargins(12, 8, 8, 8)
-        layout.setSpacing(8)
+        layout.setContentsMargins(24, 16, 16, 16)
+        layout.setSpacing(16)
 
         title_box = QVBoxLayout()
-        title_box.setSpacing(1)
+        title_box.setSpacing(2)
         title = QLabel(u"Кали · 3D/5D Copilot")
-        title.setStyleSheet("font-size: 14px; font-weight: bold; color: %s;" % C_TEXT)
+        title.setStyleSheet("font-size: 28px; font-weight: bold; color: %s;" % C_TEXT)
         status_row = QHBoxLayout()
-        status_row.setSpacing(6)
+        status_row.setSpacing(12)
         self._status_dot = QLabel(u"●")
-        self._status_dot.setFixedWidth(16)
-        self._status_dot.setStyleSheet("color: %s; font-size: 12px;" % C_LIME_DEEP)
+        self._status_dot.setFixedWidth(32)
+        self._status_dot.setStyleSheet("color: %s; font-size: 24px;" % C_LIME_DEEP)
         self._status_label = QLabel(u"Готов к работе")
-        self._status_label.setStyleSheet("color: %s; font-size: 11px;" % C_DIM)
+        self._status_label.setStyleSheet("color: %s; font-size: 22px;" % C_DIM)
         status_row.addWidget(self._status_dot)
         status_row.addWidget(self._status_label)
         status_row.addStretch(1)
@@ -446,8 +488,8 @@ class ChatPanel(QFrame):
         row.setStyleSheet("QFrame { background: %s; border: 1px solid %s; "
                           "border-radius: 10px; }" % (C_CARD, C_BORDER))
         layout = QHBoxLayout(row)
-        layout.setContentsMargins(8, 5, 8, 5)
-        layout.setSpacing(6)
+        layout.setContentsMargins(16, 10, 16, 10)
+        layout.setSpacing(12)
         for index, (label, prompt) in enumerate(PRESETS):
             button = QPushButton(label)
             button.setToolTip(prompt)
@@ -463,13 +505,13 @@ class ChatPanel(QFrame):
             "QFrame { background: %s; border: 1px solid %s; border-radius: 10px; }"
             % (C_LIME_SOFT, C_LIME))
         layout = QHBoxLayout(self._progress_frame)
-        layout.setContentsMargins(10, 5, 10, 5)
-        layout.setSpacing(8)
+        layout.setContentsMargins(20, 10, 20, 10)
+        layout.setSpacing(16)
         label = QLabel(u"🧱 Нарезка")
         label.setStyleSheet("color: %s; font-weight: bold;" % C_LIME_DEEP)
         self._progress_bar = QProgressBar()
         self._progress_bar.setTextVisible(True)
-        self._progress_bar.setFixedHeight(12)
+        self._progress_bar.setFixedHeight(24)
         self._progress_bar.setStyleSheet(
             "QProgressBar { background: #ffffff; border: none; border-radius: 5px; }"
             "QProgressBar::chunk { background: %s; border-radius: 5px; }" % C_LIME)
@@ -487,18 +529,18 @@ class ChatPanel(QFrame):
             "QFrame { background: %s; border: 1px solid %s; border-radius: 12px; }"
             % (C_CARD, C_BORDER))
         layout = QVBoxLayout(frame)
-        layout.setContentsMargins(6, 6, 6, 6)
+        layout.setContentsMargins(12, 12, 12, 12)
         self._transcript = QTextBrowser()
         self._transcript.setOpenExternalLinks(True)
         self._transcript.setStyleSheet(
             "QTextBrowser { border: none; background: %s; }" % C_CARD)
         self._transcript.document().setDefaultStyleSheet("""
             body { font-family: 'Segoe UI'; color: %s; }
-            h1, h2, h3, h4 { margin: 4px 0; }
+            h1, h2, h3, h4 { margin: 8px 0; }
             code { background-color: #f0f0ec; }
             pre { background-color: #f0f0ec; }
-            p { margin: 2px 0; }
-            table { font-size: 11px; }
+            p { margin: 4px 0; }
+            table { font-size: 22px; }
         """ % C_TEXT)
         self._transcript.setContextMenuPolicy(Qt.CustomContextMenu)
         self._transcript.customContextMenuRequested.connect(self._transcript_menu)
@@ -508,7 +550,7 @@ class ChatPanel(QFrame):
     def _build_status_strip(self):
         self._typing_label = QLabel(u"")
         self._typing_label.setStyleSheet(
-            "color: %s; font-style: italic; font-size: 11px;" % C_DIM)
+            "color: %s; font-style: italic; font-size: 22px;" % C_DIM)
         self._typing_label.hide()
         return self._typing_label
 
@@ -518,8 +560,8 @@ class ChatPanel(QFrame):
             "QFrame { background: %s; border: 1px solid %s; border-radius: 10px; }"
             % (C_CARD, C_BORDER))
         self._attach_layout = QHBoxLayout(self._attach_row)
-        self._attach_layout.setContentsMargins(8, 4, 8, 4)
-        self._attach_layout.setSpacing(6)
+        self._attach_layout.setContentsMargins(16, 8, 16, 8)
+        self._attach_layout.setSpacing(12)
         self._attach_row.hide()
         return self._attach_row
 
@@ -529,8 +571,8 @@ class ChatPanel(QFrame):
             "QFrame { background: %s; border: 1px solid %s; border-radius: 12px; }"
             % (C_CARD, C_BORDER))
         layout = QHBoxLayout(frame)
-        layout.setContentsMargins(8, 8, 8, 8)
-        layout.setSpacing(8)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(16)
 
         attach_button = QPushButton(u"📎 Файл")
         attach_button.setToolTip(u"3D-модель (STL/OBJ/3MF) или изображение")
@@ -540,17 +582,17 @@ class ChatPanel(QFrame):
         self._input = QTextEdit()
         self._input.setPlaceholderText(
             u"Опишите задачу… (Enter — отправить, Shift+Enter — новая строка)")
-        self._input.setFixedHeight(64)
+        self._input.setFixedHeight(128)
         self._input.setStyleSheet(
-            "QTextEdit { background: %s; border: 1px solid %s; border-radius: 9px; "
-            "color: %s; font-size: 12px; padding: 4px; }" % (C_BG, C_BORDER2, C_TEXT))
+            "QTextEdit { background: %s; border: 1px solid %s; border-radius: 18px; "
+            "color: %s; font-size: 24px; padding: 8px; }" % (C_BG, C_BORDER2, C_TEXT))
         self._input.installEventFilter(self)
 
         self._send_button = QPushButton(u"➤")
         self._send_button.setObjectName("sendBtn")
         self._send_button.setToolTip(u"Отправить")
         self._send_button.setCursor(Qt.PointingHandCursor)
-        self._send_button.setFixedSize(48, 44)
+        self._send_button.setFixedSize(96, 88)
         self._send_button.clicked.connect(self._submit)
 
         layout.addWidget(attach_button)
@@ -561,11 +603,11 @@ class ChatPanel(QFrame):
     # --- transcript blocks ---
 
     def _add_intro(self):
-        hello = (u"Привет! Я <b>Кали</b> 🦎 — ИИ-технолог по 3D/5D-печати.\n"
+        hello = (u"Привет! Я **Кали** 🦎 — ИИ-технолог по 3D/5D-печати.\n\n"
                  u"Опишите задачу и приложите модель (📎) — я сам выберу режим, "
                  u"материал, параметры, сориентирую деталь и запущу слайсинг.")
         self._append_html(
-            '<table width="100%%" cellspacing="0" cellpadding="8"><tr>'
+            '<table width="100%%" cellspacing="0" cellpadding="16"><tr>'
             '<td bgcolor="%s">%s</td></tr></table>' % (C_LIME_SOFT, md_to_html(hello)))
 
     def _append_html(self, html):
@@ -581,41 +623,32 @@ class ChatPanel(QFrame):
         if names:
             files = u"<br>" + u" ".join(u"📎 %s" % _esc(n) for n in names)
         self._append_html(
-            '<table width="80%%" align="right" cellspacing="0" cellpadding="7"><tr>'
+            '<table width="80%%" align="right" cellspacing="0" cellpadding="14"><tr>'
             '<td bgcolor="%s"><b>Вы</b><br>%s%s</td></tr></table>'
             % (C_CARD, _inline_md(text) or u"<i>(файлы)</i>", files))
 
     def append_assistant(self, text):
         self._last_assistant_text = text or u""
         self._append_html(
-            '<table width="94%%" align="left" cellspacing="0" cellpadding="7"><tr>'
+            '<table width="94%%" align="left" cellspacing="0" cellpadding="14"><tr>'
             '<td bgcolor="%s"><span style="color:%s;"><b>🦎 Кали</b></span><br>%s</td>'
             '</tr></table><br>'
             % (C_LIME_SOFT, C_LIME_DEEP, md_to_html(text)))
 
     def append_error(self, text):
         self._append_html(
-            '<table width="94%%" align="left" cellspacing="0" cellpadding="7"><tr>'
+            '<table width="94%%" align="left" cellspacing="0" cellpadding="14"><tr>'
             '<td bgcolor="#fdf1f1"><span style="color:%s;"><b>⚠ Ошибка</b></span><br>'
             '%s</td></tr></table><br>' % (C_DANGER, _inline_md(text)))
-
-    def append_tool(self, name, args):
-        self._append_html(
-            '<table width="94%%" align="left" cellspacing="0" cellpadding="6"><tr>'
-            '<td bgcolor="%s"><span style="color:%s;"><b>🔧 %s</b></span> '
-            '<span style="color:%s;">…</span><br>'
-            '<span style="font-family: Consolas; font-size: 11px;">%s</span>'
-            '</td></tr></table><br>'
-            % (C_BG, C_TEAL, _esc(name), C_DIM, _esc(_short_args(args))))
 
     def append_tool_result(self, name, ok, duration_ms, summary):
         mark = u"✓" if ok else u"✗"
         color = C_LIME_DEEP if ok else C_DANGER
         suffix = u" · %s мс" % duration_ms if duration_ms else u""
         self._append_html(
-            '<table width="94%%" align="left" cellspacing="0" cellpadding="3"><tr>'
+            '<table width="94%%" align="left" cellspacing="0" cellpadding="6"><tr>'
             '<td bgcolor="#ffffff"><span style="color:%s;">→ %s %s%s</span><br>'
-            '<span style="font-family: Consolas; font-size: 11px; color:%s;">%s</span>'
+            '<span style="font-family: Consolas; font-size: 22px; color:%s;">%s</span>'
             '</td></tr></table><br>'
             % (color, mark, _esc(name), suffix, C_DIM, _esc((summary or "")[:400])))
 
@@ -654,10 +687,10 @@ class ChatPanel(QFrame):
         for index, name in enumerate(names):
             chip = QLabel(u"📎 %s" % name)
             chip.setStyleSheet(
-                "background: %s; border: 1px solid %s; border-radius: 10px; "
-                "padding: 3px 8px; color: %s;" % (C_LIME_SOFT, C_LIME, C_TEXT))
+                "background: %s; border: 1px solid %s; border-radius: 20px; "
+                "padding: 6px 16px; color: %s;" % (C_LIME_SOFT, C_LIME, C_TEXT))
             remove = QPushButton(u"×")
-            remove.setFixedSize(18, 18)
+            remove.setFixedSize(36, 36)
             remove.setStyleSheet(
                 "QPushButton { border: none; color: %s; font-weight: bold; "
                 "background: transparent; } QPushButton:hover { color: %s; }"
@@ -717,13 +750,6 @@ class ChatPanel(QFrame):
         return self._last_assistant_text
 
 
-def _short_args(args):
-    try:
-        text = json.dumps(args, ensure_ascii=False)
-    except Exception:
-        text = str(args)
-    return text if len(text) <= 90 else text[:90] + u"…"
-
 
 # ----------------------------------------------------------------------------
 # orchestrator: extension <-> widgets
@@ -756,6 +782,7 @@ class WidgetsUI(QObject):
 
         self._mascot = MascotWidget()
         self._mascot.clicked.connect(self.toggle_panel)
+        self._bubble = SpeechBubble()
 
         self._panel_visible = False
         self._panel_position = None
@@ -766,8 +793,6 @@ class WidgetsUI(QObject):
                 self._panel.append_user(message.get("text", ""), [])
             else:
                 for card in message.get("tool_cards") or []:
-                    self._panel.append_tool(card.get("name", "?"),
-                                            card.get("arguments"))
                     self._panel.append_tool_result(
                         card.get("name", "?"), card.get("ok"),
                         card.get("duration_ms"), u"")
@@ -785,7 +810,6 @@ class WidgetsUI(QObject):
         # activation/minimization so our windows behave like owned children:
         # above the slicer when it is focused, hidden when it is minimized,
         # never floating over unrelated applications.
-        self._host_active = False
         self._host_minimized = False
         self._mascot_started = False
         self._follow_timer = QTimer(self)
@@ -800,10 +824,12 @@ class WidgetsUI(QObject):
         self._mascot_started = True
         self._follow_host()
         self._mascot.show()
+        self._say(u"Привет, я Кали! Тебе с чем-то помочь?", sticky=True)
 
     def show_panel(self):
         self._panel_visible = True
         self._panel_position = None   # re-anchor above the mascot on open
+        self._bubble.hide()           # the chat itself takes over the speech
         self._follow_host()
         self._panel.show()
         self._panel.raise_()
@@ -840,28 +866,57 @@ class WidgetsUI(QObject):
             return (g.x(), g.y(), g.width(), g.height())
         return geo
 
+    def _say(self, text, sticky=False):
+        self._bubble.say(text, sticky=sticky)
+        self._position_bubble()
+
+    def _position_bubble(self):
+        if not (self._bubble.isVisible() and self._mascot.isVisible()):
+            return
+        geo = self._mascot.geometry()
+        # messenger-style message: centered ABOVE the chameleon, tail down
+        self._bubble.move(geo.x() + geo.width() // 2 -
+                          self._bubble.width() // 2,
+                          geo.y() - self._bubble.height() - 8)
+
     def _follow_host(self):
         if self._mascot.manual_position is not None:
+            self._position_bubble()
             self._sync_host_state()
             return
         x, y, w, h = self._host_geometry()
-        mascot_x = x + w - self._mascot.width() - 40
-        mascot_y = y + h - self._mascot.height() - 96
+        mascot_x = x + w - self._mascot.width() - 90
+        # mascot is pinned: never moves when the panel opens/closes
+        mascot_y = y + h - self._mascot.height() - 192
         if self._mascot.pos() != QPoint(mascot_x, mascot_y):
             self._mascot.move(mascot_x, mascot_y)
+        self._position_bubble()
         if not self._panel_visible:
             self._panel_position = None
         elif self._panel_position is None:
-            panel_x = x + w - self._panel.width() - 40
-            panel_y = mascot_y - self._panel.height() - 14
-            if panel_y < y + 8:
-                panel_y = y + 8
+            # panel opens just above Kali's head, right-aligned with him:
+            # the card's top 40px are empty, so sinking the panel 28px into
+            # it leaves ~12px of air over the gif. Nominal 1000x1320 (2x);
+            # height is clamped to what fits without covering the chameleon.
+            max_w = w - 32
+            max_h = mascot_y + 28 - (y + 8)
+            panel_w = min(1000, max_w)
+            panel_h = min(1320, max_h)
+            if (self._panel.width(), self._panel.height()) != (panel_w, panel_h):
+                self._panel.setFixedSize(panel_w, panel_h)
+            panel_x = mascot_x + self._mascot.width() - panel_w
+            if panel_x < x + 8:
+                panel_x = x + 8
+            panel_y = mascot_y + 28 - panel_h
             self._panel.move(panel_x, panel_y)
             self._panel_position = QPoint(panel_x, panel_y)
         self._sync_host_state()
 
     def _sync_host_state(self):
-        """Owned-window behaviour: rise with the slicer, hide with it."""
+        """The mascot is pinned to the slicer corner: visible whenever the
+        slicer window is. Parentless Qt.Tool windows drop below the main
+        window whenever a dialog opens/closes or focus moves, so re-show
+        and re-raise them on every follow tick (400 ms)."""
         try:
             state = self._extension.get_main_window_state()
         except Exception:
@@ -871,23 +926,19 @@ class WidgetsUI(QObject):
                 self._host_minimized = True
                 self._mascot.hide()
                 self._panel.hide()
+                self._bubble.hide()
             return
-        if self._host_minimized:
-            self._host_minimized = False
-            if self._mascot_started:
+        self._host_minimized = False
+        if self._mascot_started:
+            if not self._mascot.isVisible():
                 self._mascot.show()
-            if self._panel_visible:
-                self._panel.show()
-        try:
-            active = bool(self._extension.is_main_window_active())
-        except Exception:
-            active = True
-        if active and not self._host_active:
-            # slicer just got focus — float our windows above it
             self._mascot.raise_()
-            if self._panel_visible:
-                self._panel.raise_()
-        self._host_active = active
+        if self._panel_visible:
+            if not self._panel.isVisible():
+                self._panel.show()
+            self._panel.raise_()
+        if self._bubble.isVisible():
+            self._bubble.raise_()
 
     # ------------- user input -------------
 
@@ -990,7 +1041,7 @@ class WidgetsUI(QObject):
     def _open_tools(self):
         dialog = QDialog(self._panel)
         dialog.setWindowTitle(u"MCP-инструменты агента")
-        dialog.resize(420, 380)
+        dialog.resize(840, 760)
         layout = QVBoxLayout(dialog)
         listing = QListWidget()
         try:
@@ -1040,15 +1091,14 @@ class WidgetsUI(QObject):
             if len(snippet) > 80:
                 snippet = snippet[:80] + u"…"
             if snippet:
-                self._mascot.set_speech(snippet)
+                self._say(snippet)
         elif etype == "tool_call":
             self._busy = True
             self._panel.set_busy(True)
             self._panel.set_typing(False)
-            self._panel.append_tool(data.get("name", "?"), data.get("arguments"))
             self._panel.set_status(u"Выполняет: %s…" % data.get("name", ""), "processing")
             self._mascot.set_state("think")
-            self._mascot.set_speech(u"Работаю со слайсером: %s…" % data.get("name", "?"))
+            self._say(u"Работаю со слайсером: %s…" % data.get("name", "?"))
         elif etype == "tool_result":
             self._panel.append_tool_result(
                 data.get("name", "?"), data.get("ok"),
@@ -1060,7 +1110,7 @@ class WidgetsUI(QObject):
                 self._panel.set_typing(True)
                 self._panel.set_status(u"Анализирует запрос…", "thinking")
                 self._mascot.set_state("think")
-                self._mascot.set_speech(u"Хм-хм… анализирую задачу…")
+                self._say(u"Хм-хм… анализирую задачу…")
             elif data.get("state") == "idle":
                 self._busy = False
                 self._panel.set_busy(False)
@@ -1076,9 +1126,13 @@ class WidgetsUI(QObject):
 
     def _refresh_slicing(self):
         try:
-            snapshot = self._extension.get_slicing_snapshot()
-        except Exception:
-            snapshot = None
-        active = bool(snapshot) and snapshot.get("state") == "slicing"
-        self._panel.set_slicing(active,
-                                float((snapshot or {}).get("progress", 0.0)) * 100.0)
+            try:
+                snapshot = self._extension.get_slicing_snapshot()
+            except Exception:
+                snapshot = None
+            active = bool(snapshot) and snapshot.get("state") == "slicing"
+            self._panel.set_slicing(
+                active, float((snapshot or {}).get("progress", 0.0)) * 100.0)
+        except Exception as e:
+            # a UI poller must never take the whole slicer down
+            _log("e", "slicing poll failed: %s" % e)
