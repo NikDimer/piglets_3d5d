@@ -55,6 +55,8 @@ check("panel status/busy/typing",
 check("mascot states",
       lambda: [mascot.set_state(s) for s in ("idle", "think", "happy")])
 check("bubble say sticky", lambda: bubble.say(u"Привет, я Кали!", sticky=True))
+check("bubble say two lines",
+      lambda: bubble.say(u"Привет, я Кали!\nТебе с чем-то помочь?", sticky=True))
 check("bubble say plain", lambda: bubble.say(u"Работаю…"))
 check("bubble empty hides", lambda: bubble.say(u""))
 check("panel intro present",

@@ -321,6 +321,7 @@ class SpeechBubble(QFrame):
                                            Qt.Tool | Qt.FramelessWindowHint)
         self.setAttribute(Qt.WA_TranslucentBackground, True)
         self.setAttribute(Qt.WA_ShowWithoutActivating, True)
+        self._body_h = self.BODY_H
         self._label = QLabel(self)
         self._label.setStyleSheet(
             "color:#ffffff; font-size:20px; font-weight:600; "
@@ -338,13 +339,21 @@ class SpeechBubble(QFrame):
             self.hide()
             return
         metrics = QFontMetrics(self._label.font())
-        shown = metrics.elidedText(
-            text if len(text) <= 90 else text[:90] + u"…",
-            Qt.ElideRight, self.MAX_TEXT)
-        self._label.setText(shown)
-        text_w = min(metrics.width(shown), self.MAX_TEXT)
-        self._label.setGeometry(20, 0, text_w + 4, self.BODY_H)
-        self.setFixedSize(text_w + 40, self.BODY_H + self.TAIL)
+        # explicit \n lines are kept as-is (no eliding) so e.g. the greeting
+        # always shows its full text wrapped over two lines
+        lines = [l for l in text.split(u"\n") if l.strip()]
+        if len(lines) > 1 and max(metrics.width(l) for l in lines) <= self.MAX_TEXT:
+            shown_lines = lines
+        else:
+            shown_lines = [metrics.elidedText(
+                text.replace(u"\n", u" ") if len(text) <= 90 else text[:90] + u"…",
+                Qt.ElideRight, self.MAX_TEXT)]
+        text_w = max(metrics.width(l) for l in shown_lines)
+        line_h = metrics.height()
+        self._label.setText(u"\n".join(shown_lines))
+        self._body_h = self.BODY_H + (len(shown_lines) - 1) * (line_h + 2)
+        self._label.setGeometry(20, 0, text_w + 4, self._body_h)
+        self.setFixedSize(text_w + 40, self._body_h + self.TAIL)
         if sticky:
             self._timer.stop()      # e.g. the greeting: stays until replaced
         else:
@@ -356,7 +365,7 @@ class SpeechBubble(QFrame):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
         w = self.width()
-        h = self.BODY_H
+        h = self._body_h
         gradient = QLinearGradient(0, 0, w, 0)
         gradient.setColorAt(0.0, QColor("#65b04b"))
         gradient.setColorAt(0.52, QColor("#2e9e8f"))
@@ -824,7 +833,7 @@ class WidgetsUI(QObject):
         self._mascot_started = True
         self._follow_host()
         self._mascot.show()
-        self._say(u"Привет, я Кали! Тебе с чем-то помочь?", sticky=True)
+        self._say(u"Привет, я Кали!\nТебе с чем-то помочь?", sticky=True)
 
     def show_panel(self):
         self._panel_visible = True
@@ -885,7 +894,7 @@ class WidgetsUI(QObject):
             self._sync_host_state()
             return
         x, y, w, h = self._host_geometry()
-        mascot_x = x + w - self._mascot.width() - 90
+        mascot_x = x + w - self._mascot.width() - 190
         # mascot is pinned: never moves when the panel opens/closes
         mascot_y = y + h - self._mascot.height() - 192
         if self._mascot.pos() != QPoint(mascot_x, mascot_y):
