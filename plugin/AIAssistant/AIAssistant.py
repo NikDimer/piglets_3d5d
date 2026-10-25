@@ -38,7 +38,7 @@ PREF_RESULTS_DIR = "ai_assistant/results_dir"
 
 # Демо-ключ организаторов, опубликованный в материалах кейса (страница хакатона).
 # Хранится в настройках приложения; пользователь может заменить своим в UI.
-DEFAULT_API_KEY = "sk-YPkGgXM491sMIFz6bMDiMw"
+DEFAULT_API_KEY = "sk-***"
 
 MAX_BODY = 64 * 1024 * 1024  # 64 MB (stl + images)
 
