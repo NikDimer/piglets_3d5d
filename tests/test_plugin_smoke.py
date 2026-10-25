@@ -8,7 +8,7 @@ import time
 
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # project root
 PLUGIN_DIR = os.path.join(HERE, "plugin", "AIAssistant")
-MODELS_DIR = os.path.join(HERE, "_vendor", "models")
+MODELS_DIR = os.path.join(HERE, "models")
 sys.path.insert(0, PLUGIN_DIR)
 
 

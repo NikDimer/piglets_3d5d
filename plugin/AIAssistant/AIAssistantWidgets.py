@@ -22,11 +22,12 @@ import json
 import os
 
 from PyQt5.QtCore import Qt, QTimer, QObject, QPoint, QEvent, pyqtSignal
-from PyQt5.QtGui import QMovie, QColor, QPainter, QPen, QPixmap, QFontMetrics
+from PyQt5.QtGui import QMovie, QPixmap, QFontMetrics
 from PyQt5.QtWidgets import (
     QApplication, QFrame, QLabel, QPushButton, QTextEdit, QTextBrowser,
     QVBoxLayout, QHBoxLayout, QFileDialog, QProgressBar, QDialog, QLineEdit,
-    QDialogButtonBox, QFormLayout, QListWidget, QListWidgetItem, QMenu
+    QDialogButtonBox, QFormLayout, QListWidget, QListWidgetItem, QMenu,
+    QMessageBox
 )
 
 MODULE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -46,19 +47,21 @@ C_TEAL = "#2ea3a8"
 C_DANGER = "#e05d5d"
 
 MASCOT_MOVIES = {
-    "idle": os.path.join(MASCOT_DIR, "mascot_idle_light.gif"),
-    "think": os.path.join(MASCOT_DIR, "mascot_think_light.gif"),
-    "happy": os.path.join(MASCOT_DIR, "mascot_happy_light.gif"),
+    "idle": os.path.join(MASCOT_DIR, "mascot_idle_transparent.gif"),
+    "think": os.path.join(MASCOT_DIR, "mascot_think_transparent.gif"),
+    "happy": os.path.join(MASCOT_DIR, "mascot_happy_transparent.gif"),
 }
 # static fallback frames for Qt builds whose QtGui lacks the GIF handler
 MASCOT_FRAMES = {
-    "idle": os.path.join(MASCOT_DIR, "mascot_idle_light_frame.png"),
-    "think": os.path.join(MASCOT_DIR, "mascot_think_light_frame.png"),
-    "happy": os.path.join(MASCOT_DIR, "mascot_happy_light_frame.png"),
+    "idle": os.path.join(MASCOT_DIR, "mascot_idle_transparent_frame.png"),
+    "think": os.path.join(MASCOT_DIR, "mascot_think_transparent_frame.png"),
+    "happy": os.path.join(MASCOT_DIR, "mascot_happy_transparent_frame.png"),
 }
 
 IMAGE_EXT = (".png", ".jpg", ".jpeg", ".bmp", ".webp")
 MODEL_EXT = (".stl", ".obj", ".3mf")
+TUTORIAL_MODEL = os.path.join(MODULE_DIR, "resources", "tutorial", "Шестерня.stl")
+TUTORIAL_SPRITES = os.path.join(MASCOT_DIR, "tutorial")
 
 PRESETS = [
     (u"Кронштейн", u"Кронштейн под нагрузку, PETG, без поддержек. Приложу STL — "
@@ -234,18 +237,18 @@ class ChatBridge(QObject):
 # ----------------------------------------------------------------------------
 
 class MascotWidget(QFrame):
-    """Frameless draggable chameleon card. QMovie renders the GIF through
+    """Frameless draggable chameleon. QMovie renders the GIF through
     QLabel paint events (QPainter), not the Qt Quick scene graph."""
 
     clicked = pyqtSignal()
-
-    STATE_BORDER = {"idle": C_BORDER2, "think": C_LIME, "happy": C_TEAL}
 
     def __init__(self):
         super(MascotWidget, self).__init__(None,
                                            Qt.Tool | Qt.FramelessWindowHint)
         self.setAttribute(Qt.WA_TranslucentBackground, True)
         self.setFixedSize(158, 196)
+        self.setCursor(Qt.PointingHandCursor)
+        self.setToolTip(u"Нажмите, чтобы открыть AI-чат")
         self._drag_offset = None
         self._state = "idle"
         self._speech = u""
@@ -255,6 +258,9 @@ class MascotWidget(QFrame):
         self._movie_label.setGeometry(14, 30, 130, 158)
         self._movie_label.setAlignment(Qt.AlignCenter)
         self._movie_label.setScaledContents(True)   # GIFs are 240x320
+        self._movie_label.setStyleSheet("background: transparent; border: none;")
+        self._movie_label.setCursor(Qt.PointingHandCursor)
+        self._movie_label.setToolTip(u"Открыть AI-чат")
         self._movie = None
 
         self._badge = QLabel(self)
@@ -262,6 +268,7 @@ class MascotWidget(QFrame):
         self._badge.setStyleSheet(
             "background:%s; border:2px solid %s; border-radius:12px; "
             "color:%s; font-size:11px;" % (C_CARD, C_LIME, C_TEXT))
+        self._badge.setCursor(Qt.PointingHandCursor)
         self._badge.hide()
 
         self.set_state("idle")
@@ -310,11 +317,9 @@ class MascotWidget(QFrame):
     # --- painting / interaction ---
 
     def paintEvent(self, event):
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.Antialiasing)
-        painter.setPen(QPen(QColor(self.STATE_BORDER.get(self._state, C_BORDER2)), 3))
-        painter.setBrush(QColor(C_CARD))
-        painter.drawRoundedRect(1, 1, self.width() - 3, self.height() - 3, 18, 18)
+        # Keep only the mascot and speech badge visible; the widget itself is
+        # transparent so the character does not appear inside a card.
+        QFrame.paintEvent(self, event)
 
     def mousePressEvent(self, event):
         if event.button() == Qt.LeftButton:
@@ -356,16 +361,18 @@ class ChatPanel(QFrame):
         super(ChatPanel, self).__init__(None,
                                         Qt.Tool | Qt.FramelessWindowHint)
         self.setAttribute(Qt.WA_TranslucentBackground, True)
-        self.setFixedSize(500, 660)
+        self.setFixedSize(760, 720)
         self._drag_offset = None
         self._attachments = []      # [(name, path)]
         self._last_assistant_text = u""
 
         self.setStyleSheet("""
-            QLabel { color: %s; font-size: 12px; }
+            QFrame#chatRoot { background: %s; border: 1px solid %s;
+                              border-radius: 18px; }
+            QLabel { color: %s; font-size: 13px; }
             QPushButton {
                 background: %s; border: 1px solid %s; border-radius: 9px;
-                padding: 6px 12px; color: %s; font-size: 12px;
+                padding: 8px 14px; color: %s; font-size: 13px;
             }
             QPushButton:hover { background: %s; border-color: %s; color: %s; }
             QPushButton:disabled { color: #a8ab9e; background: #efede5; }
@@ -376,9 +383,10 @@ class ChatPanel(QFrame):
             QPushButton#sendBtn:hover { background: #96cf52; }
             QPushButton#sendBtn:disabled { background: #e9e7df; }
             QPushButton#closeBtn:hover { background: #fbe7e7; border-color: %s; color: %s; }
-        """ % (C_TEXT, C_CARD, C_BORDER2, C_TEXT,
+        """ % (C_BG, C_BORDER, C_TEXT, C_CARD, C_BORDER2, C_TEXT,
                C_LIME_SOFT, C_LIME, C_LIME_DEEP,
                C_LIME, C_DANGER, C_DANGER))
+        self.setObjectName("chatRoot")
 
         root = QVBoxLayout(self)
         root.setContentsMargins(12, 12, 12, 12)
@@ -399,23 +407,23 @@ class ChatPanel(QFrame):
     def _build_header(self):
         header = QFrame()
         header.setStyleSheet(
-            "QFrame { background: %s; border: 1px solid %s; border-radius: 12px; }"
+            "QFrame { background: %s; border-bottom: 1px solid %s; }"
             % (C_CARD, C_BORDER))
         layout = QHBoxLayout(header)
-        layout.setContentsMargins(12, 8, 8, 8)
-        layout.setSpacing(8)
+        layout.setContentsMargins(18, 14, 14, 14)
+        layout.setSpacing(7)
 
         title_box = QVBoxLayout()
         title_box.setSpacing(1)
-        title = QLabel(u"Кали · 3D/5D Copilot")
-        title.setStyleSheet("font-size: 14px; font-weight: bold; color: %s;" % C_TEXT)
+        title = QLabel(u"Кали · 3D/5D")
+        title.setStyleSheet("font-size: 20px; font-weight: bold; color: %s;" % C_TEXT)
         status_row = QHBoxLayout()
         status_row.setSpacing(6)
         self._status_dot = QLabel(u"●")
         self._status_dot.setFixedWidth(16)
         self._status_dot.setStyleSheet("color: %s; font-size: 12px;" % C_LIME_DEEP)
         self._status_label = QLabel(u"Готов к работе")
-        self._status_label.setStyleSheet("color: %s; font-size: 11px;" % C_DIM)
+        self._status_label.setStyleSheet("color: %s; font-size: 13px;" % C_DIM)
         status_row.addWidget(self._status_dot)
         status_row.addWidget(self._status_label)
         status_row.addStretch(1)
@@ -425,6 +433,7 @@ class ChatPanel(QFrame):
         layout.addStretch(1)
 
         for text, action, tooltip in (
+                (u"📘 Обучение", "tutorial", u"Показать обучение на примере шестерни"),
                 (u"🌐 В браузере", "browser", u"Открыть полную веб-версию чата"),
                 (u"🛠", "tools", u"MCP-инструменты"),
                 (u"⚙", "settings", u"API-ключ, адрес и модель"),
@@ -443,15 +452,21 @@ class ChatPanel(QFrame):
 
     def _build_presets(self):
         row = QFrame()
-        row.setStyleSheet("QFrame { background: %s; border: 1px solid %s; "
-                          "border-radius: 10px; }" % (C_CARD, C_BORDER))
+        row.setStyleSheet("QFrame { background: %s; border-bottom: 1px solid %s; }"
+                          % (C_CARD, C_BORDER))
         layout = QHBoxLayout(row)
-        layout.setContentsMargins(8, 5, 8, 5)
-        layout.setSpacing(6)
+        layout.setContentsMargins(14, 10, 14, 10)
+        layout.setSpacing(8)
         for index, (label, prompt) in enumerate(PRESETS):
             button = QPushButton(label)
             button.setToolTip(prompt)
             button.setCursor(Qt.PointingHandCursor)
+            button.setStyleSheet(
+                "QPushButton { border-radius: 18px; padding: 8px 13px; "
+                "background: %s; color: %s; }"
+                "QPushButton:hover { background: %s; border-color: %s; "
+                "color: %s; }"
+                % (C_BG, C_DIM, C_LIME_SOFT, C_LIME, C_LIME_DEEP))
             button.clicked.connect(
                 lambda _=False, p=prompt: self.sendMessageRequested.emit(p))
             layout.addWidget(button)
@@ -484,8 +499,8 @@ class ChatPanel(QFrame):
     def _build_transcript(self):
         frame = QFrame()
         frame.setStyleSheet(
-            "QFrame { background: %s; border: 1px solid %s; border-radius: 12px; }"
-            % (C_CARD, C_BORDER))
+            "QFrame { background: %s; border: 1px solid %s; "
+            "border-radius: 12px; }" % (C_CARD, C_BORDER))
         layout = QVBoxLayout(frame)
         layout.setContentsMargins(6, 6, 6, 6)
         self._transcript = QTextBrowser()
@@ -493,13 +508,13 @@ class ChatPanel(QFrame):
         self._transcript.setStyleSheet(
             "QTextBrowser { border: none; background: %s; }" % C_CARD)
         self._transcript.document().setDefaultStyleSheet("""
-            body { font-family: 'Segoe UI'; color: %s; }
-            h1, h2, h3, h4 { margin: 4px 0; }
-            code { background-color: #f0f0ec; }
-            pre { background-color: #f0f0ec; }
-            p { margin: 2px 0; }
-            table { font-size: 11px; }
-        """ % C_TEXT)
+            body { font-family: 'Segoe UI'; color: %s; font-size: 13px; }
+            h1, h2, h3, h4 { margin: 8px 0 4px; color: %s; }
+            code { background-color: %s; color: %s; padding: 2px 4px; }
+            pre { background-color: #efede6; padding: 8px; }
+            p { margin: 4px 0; line-height: 1.35; }
+            table { font-size: 13px; border-spacing: 0; }
+        """ % (C_TEXT, C_LIME_DEEP, C_LIME_SOFT, C_LIME_DEEP))
         self._transcript.setContextMenuPolicy(Qt.CustomContextMenu)
         self._transcript.customContextMenuRequested.connect(self._transcript_menu)
         layout.addWidget(self._transcript)
@@ -561,12 +576,13 @@ class ChatPanel(QFrame):
     # --- transcript blocks ---
 
     def _add_intro(self):
-        hello = (u"Привет! Я <b>Кали</b> 🦎 — ИИ-технолог по 3D/5D-печати.\n"
-                 u"Опишите задачу и приложите модель (📎) — я сам выберу режим, "
-                 u"материал, параметры, сориентирую деталь и запущу слайсинг.")
         self._append_html(
             '<table width="100%%" cellspacing="0" cellpadding="8"><tr>'
-            '<td bgcolor="%s">%s</td></tr></table>' % (C_LIME_SOFT, md_to_html(hello)))
+            '<td bgcolor="%s"><b>Привет! Я Кали</b> 🦎 — ваш ИИ-технолог по '
+            '3D/5D-печати.<br>%s</td></tr></table>'
+            % (C_LIME_SOFT, _inline_md(
+                u"Опишите задачу и приложите модель (📎) — я сам выберу режим, "
+                u"материал, параметры, сориентирую деталь и запущу слайсинг.")))
 
     def _append_html(self, html):
         bar = self._transcript.verticalScrollBar()
@@ -581,17 +597,18 @@ class ChatPanel(QFrame):
         if names:
             files = u"<br>" + u" ".join(u"📎 %s" % _esc(n) for n in names)
         self._append_html(
-            '<table width="80%%" align="right" cellspacing="0" cellpadding="7"><tr>'
-            '<td bgcolor="%s"><b>Вы</b><br>%s%s</td></tr></table>'
-            % (C_CARD, _inline_md(text) or u"<i>(файлы)</i>", files))
+            '<table width="78%%" align="right" cellspacing="0" cellpadding="11">'
+            '<tr><td bgcolor="%s"><font color="#ffffff"><b>Вы</b><br>%s%s'
+            '</font></td></tr></table><br>'
+            % (C_LIME_DEEP, _inline_md(text) or u"<i>(файлы)</i>", files))
 
     def append_assistant(self, text):
         self._last_assistant_text = text or u""
         self._append_html(
-            '<table width="94%%" align="left" cellspacing="0" cellpadding="7"><tr>'
-            '<td bgcolor="%s"><span style="color:%s;"><b>🦎 Кали</b></span><br>%s</td>'
-            '</tr></table><br>'
-            % (C_LIME_SOFT, C_LIME_DEEP, md_to_html(text)))
+            '<table width="94%%" align="left" cellspacing="0" cellpadding="11">'
+            '<tr><td bgcolor="%s"><span style="color:%s;"><b>Кали</b></span>'
+            '<br>%s</td></tr></table><br>'
+            % (C_CARD, C_LIME_DEEP, md_to_html(text)))
 
     def append_error(self, text):
         self._append_html(
@@ -725,6 +742,239 @@ def _short_args(args):
     return text if len(text) <= 90 else text[:90] + u"…"
 
 
+class TutorialDialog(QDialog):
+    """Short guided tour of the agent workflow using the bundled gear STL."""
+
+    startExampleRequested = pyqtSignal()
+
+    PAGES = (
+        (u"1. Познакомимся",
+         u"Кали помогает пройти путь от 3D-модели до готового файла печати. "
+         u"В обучении разберём настоящую шестерню из проекта.",
+         "sprite_1_1.png"),
+        (u"2. Загрузим модель",
+         u"Приложите STL, OBJ или 3MF к сообщению. Кали загрузит модель, "
+         u"проверит размеры, объём, отверстия и нависания.",
+         "sprite_1_3.png"),
+        (u"3. Выберем режим",
+         u"Плоская шестерня обычно печатается в 3D: это проще и предсказуемее. "
+         u"Для трубчатых деталей Кали может выбрать 5D Spiral.",
+         "sprite_2_1.png"),
+        (u"4. Настроим печать",
+         u"Кали подберёт материал, профиль, высоту слоя, стенки, заполнение, "
+         u"температуры и поддержки под задачу и нагрузку.",
+         "sprite_3_3.png"),
+        (u"5. Прослайсим",
+         u"После настройки Кали запускает слайсинг и следит за его прогрессом. "
+         u"Ошибки и зависания показываются прямо в чате.",
+         "sprite_2_4.png"),
+        (u"6. Проверим результат",
+         u"В финальном отчёте будут время печати, расход материала, рекомендации "
+         u"и ссылки на экспорт 3MF и G-code.",
+         "sprite_2_5.png"),
+    )
+
+    def __init__(self, parent=None):
+        super(TutorialDialog, self).__init__(parent)
+        self.setWindowTitle(u"Обучение с Кали")
+        self.setFixedSize(620, 560)
+        self._page = 0
+
+        self.setStyleSheet("""
+            QDialog { background: #f7f6f2; }
+            QLabel#title { color: #2a2f28; font-size: 20px; font-weight: bold; }
+            QLabel#text { color: #2a2f28; font-size: 14px; }
+            QLabel#counter { color: #75806f; font-size: 12px; }
+            QPushButton { padding: 8px 16px; border: 1px solid #d8d4c6;
+                          border-radius: 10px; background: #ffffff; }
+            QPushButton:hover { border-color: #8dc63f; color: #6fa82e; }
+            QPushButton#start { color: #ffffff; background: #8dc63f;
+                                border: none; font-weight: bold; }
+        """)
+        root = QVBoxLayout(self)
+        root.setContentsMargins(22, 18, 22, 18)
+        root.setSpacing(10)
+
+        self._title = QLabel()
+        self._title.setObjectName("title")
+        self._title.setAlignment(Qt.AlignCenter)
+        self._sprite = QLabel()
+        self._sprite.setAlignment(Qt.AlignCenter)
+        self._sprite.setMinimumHeight(230)
+        self._text = QLabel()
+        self._text.setObjectName("text")
+        self._text.setWordWrap(True)
+        self._text.setAlignment(Qt.AlignCenter)
+        self._counter = QLabel()
+        self._counter.setObjectName("counter")
+        self._counter.setAlignment(Qt.AlignCenter)
+        root.addWidget(self._title)
+        root.addWidget(self._sprite, 1)
+        root.addWidget(self._text)
+        root.addWidget(self._counter)
+
+        buttons = QHBoxLayout()
+        self._back = QPushButton(u"← Назад")
+        self._next = QPushButton(u"Далее →")
+        self._start = QPushButton(u"Начать разбор шестерни")
+        self._start.setObjectName("start")
+        close = QPushButton(u"Закрыть")
+        self._back.clicked.connect(self._previous)
+        self._next.clicked.connect(self._next_page)
+        self._start.clicked.connect(self._start_example)
+        close.clicked.connect(self.reject)
+        buttons.addWidget(self._back)
+        buttons.addStretch(1)
+        buttons.addWidget(self._start)
+        buttons.addWidget(self._next)
+        buttons.addWidget(close)
+        root.addLayout(buttons)
+        self._show_page()
+
+    def _show_page(self):
+        title, text, sprite = self.PAGES[self._page]
+        self._title.setText(title)
+        self._text.setText(text)
+        self._counter.setText(u"Шаг %d из %d" % (self._page + 1, len(self.PAGES)))
+        pixmap = QPixmap(os.path.join(TUTORIAL_SPRITES, sprite))
+        self._sprite.setPixmap(pixmap.scaled(
+            260, 230, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+        self._back.setEnabled(self._page > 0)
+        self._next.setVisible(self._page < len(self.PAGES) - 1)
+        self._start.setVisible(self._page == len(self.PAGES) - 1)
+
+    def _previous(self):
+        self._page = max(0, self._page - 1)
+        self._show_page()
+
+    def _next_page(self):
+        self._page = min(len(self.PAGES) - 1, self._page + 1)
+        self._show_page()
+
+    def _start_example(self):
+        self.accept()
+        self.startExampleRequested.emit()
+
+
+class GuidedTutorial(QDialog):
+    """Non-modal parameter tour shown beside the slicer's settings panel."""
+
+    startExampleRequested = pyqtSignal()
+    _active_instance = None
+
+    STEPS = (
+        (u"Режим печати", u"3D — обычная послойная печать. 5D нужен для "
+         u"трубчатых деталей и непрерывной стенки.", "sprite_1_3.png", 315),
+        (u"Высота слоя", u"Меньше слой — выше детализация, но дольше печать. "
+         u"Для шестерни Кали оставит умеренное значение.", "sprite_2_1.png", 445),
+        (u"Заполнение", u"Заполнение отвечает за внутреннюю прочность и расход "
+         u"пластика. Для этой детали важнее стенки, чем высокий процент.",
+         "sprite_2_4.png", 555),
+        (u"Стенки", u"Стенки формируют зубья и внешний контур. Кали увеличит "
+         u"их число, если детали нужна прочность.", "sprite_3_3.png", 665),
+        (u"Материал и температура", u"Материал задаёт свойства пластика, а "
+         u"температура помогает слоям хорошо сцепляться.", "sprite_4_1.png", 755),
+        (u"Поддержки", u"Поддержки нужны только нависающим участкам. Кали "
+         u"включит их, если без них геометрия не напечатается.", "sprite_4_3.png", 850),
+    )
+
+    def __init__(self, mascot, host_geometry, parent=None):
+        super(GuidedTutorial, self).__init__(parent)
+        GuidedTutorial._active_instance = self
+        self._mascot = mascot
+        self._host_geometry = host_geometry
+        self._step = 0
+        self.setWindowTitle(u"Обучение с Кали")
+        self.setWindowFlags(Qt.Tool | Qt.FramelessWindowHint)
+        self.setFixedSize(460, 190)
+        self.setStyleSheet("""
+            QDialog { background: #ffffff; border: 2px solid #8dc63f;
+                      border-radius: 14px; }
+            QLabel#title { color: #2a2f28; font-size: 17px; font-weight: bold; }
+            QLabel#text { color: #2a2f28; font-size: 13px; }
+            QLabel#counter { color: #75806f; font-size: 11px; }
+            QPushButton { padding: 7px 14px; border: 1px solid #d8d4c6;
+                          border-radius: 9px; background: #ffffff; }
+            QPushButton#next { color: #ffffff; background: #8dc63f;
+                               border: none; font-weight: bold; }
+        """)
+        root = QVBoxLayout(self)
+        root.setContentsMargins(16, 12, 16, 12)
+        root.setSpacing(5)
+        self._title = QLabel()
+        self._title.setObjectName("title")
+        self._text = QLabel()
+        self._text.setObjectName("text")
+        self._text.setWordWrap(True)
+        self._sprite = QLabel()
+        self._sprite.setAlignment(Qt.AlignCenter)
+        self._sprite.setFixedSize(115, 125)
+        self._counter = QLabel()
+        self._counter.setObjectName("counter")
+        buttons = QHBoxLayout()
+        self._next = QPushButton(u"Далее →")
+        self._next.setObjectName("next")
+        close = QPushButton(u"Закрыть")
+        self._next.clicked.connect(self._next_step)
+        close.clicked.connect(self.close)
+        buttons.addStretch(1)
+        buttons.addWidget(self._next)
+        buttons.addWidget(close)
+        content = QHBoxLayout()
+        content.setSpacing(12)
+        content.addWidget(self._sprite)
+        explanation = QVBoxLayout()
+        explanation.addWidget(self._title)
+        explanation.addWidget(self._text, 1)
+        content.addLayout(explanation, 1)
+        root.addLayout(content, 1)
+        root.addWidget(self._counter)
+        root.addLayout(buttons)
+        self._show_step()
+
+    def _show_step(self):
+        title, text, sprite, target_y = self.STEPS[self._step]
+        self._title.setText(title)
+        self._text.setText(text)
+        pixmap = QPixmap(os.path.join(TUTORIAL_SPRITES, sprite))
+        self._sprite.setPixmap(pixmap.scaled(
+            105, 120, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+        self._counter.setText(u"Параметры слева · шаг %d из %d" %
+                              (self._step + 1, len(self.STEPS)))
+        self._next.setText(u"Завершить" if self._step == len(self.STEPS) - 1
+                           else u"Далее →")
+        x, y, width, height = self._host_geometry()
+        # The card and its tutorial sprite sit next to the left settings pane.
+        # The live mascot is intentionally not moved or changed.
+        # The slicer's settings pane is the fixed left column. Keep the
+        # tutorial card immediately to its right; do not clamp it against a
+        # screen geometry from another monitor.
+        card_x = x + 385
+        card_y = y + target_y - self.height() // 2
+        was_visible = self.isVisible()
+        if was_visible:
+            self.hide()
+        self.move(card_x, card_y)
+        if was_visible:
+            self.show()
+        self.raise_()
+
+    def _next_step(self):
+        if self._step == len(self.STEPS) - 1:
+            self.startExampleRequested.emit()
+            self.close()
+            return
+        self._step += 1
+        self._show_step()
+
+    def closeEvent(self, event):
+        if GuidedTutorial._active_instance is self:
+            GuidedTutorial._active_instance = None
+        if hasattr(self, "_follow_timer"):
+            self._follow_timer.stop()
+        event.accept()
+
+
 # ----------------------------------------------------------------------------
 # orchestrator: extension <-> widgets
 # ----------------------------------------------------------------------------
@@ -759,6 +1009,7 @@ class WidgetsUI(QObject):
 
         self._panel_visible = False
         self._panel_position = None
+        self._guided_tutorial = None
 
         # preload conversation shared with the web SPA
         for message in extension.chat.history():
@@ -800,6 +1051,31 @@ class WidgetsUI(QObject):
         self._mascot_started = True
         self._follow_host()
         self._mascot.show()
+        QTimer.singleShot(0, self._offer_tutorial)
+
+    def _offer_tutorial(self):
+        try:
+            prefs = self._extension.get_prefs()
+            choice = prefs.getValue("ai_assistant/tutorial_choice") or ""
+        except Exception as e:
+            _log("w", "cannot read tutorial preference: %s" % e)
+            return
+        if choice:
+            return
+        answer = QMessageBox.question(
+            self._panel, u"Обучение с Кали",
+            u"Хотите пройти короткое обучение на примере шестерни?\n\n"
+            u"Кали покажет загрузку модели, выбор режима, настройку, "
+            u"слайсинг и экспорт.",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.Yes)
+        try:
+            prefs.setValue("ai_assistant/tutorial_choice",
+                           "accepted" if answer == QMessageBox.Yes else "declined")
+        except Exception as e:
+            _log("w", "cannot save tutorial preference: %s" % e)
+        if answer == QMessageBox.Yes:
+            self._open_tutorial()
 
     def show_panel(self):
         self._panel_visible = True
@@ -934,7 +1210,9 @@ class WidgetsUI(QObject):
                 [os.path.basename(p) for p in self._attached_paths])
 
     def _on_action(self, action):
-        if action == "browser":
+        if action == "tutorial":
+            self._open_tutorial()
+        elif action == "browser":
             try:
                 self._extension.showChat()
             except Exception as e:
@@ -954,6 +1232,42 @@ class WidgetsUI(QObject):
             self.hide_panel()
 
     # ------------- dialogs -------------
+
+    def _open_tutorial(self):
+        # There can be stale dialogs after a plugin reload. Hide and close all
+        # of them before creating the one current tutorial card.
+        for widget in QApplication.allWidgets():
+            is_tutorial = isinstance(widget, (TutorialDialog, GuidedTutorial))
+            # The title check also catches dialogs created by an older module
+            # object when the plugin was reloaded without restarting Qt.
+            is_old_tutorial = (isinstance(widget, QDialog) and
+                               widget.windowTitle() == u"Обучение с Кали")
+            if is_tutorial or is_old_tutorial:
+                widget.hide()
+                widget.close()
+        self._guided_tutorial = None
+        dialog = GuidedTutorial(self._mascot, self._host_geometry)
+        dialog.startExampleRequested.connect(self._start_tutorial_example)
+        dialog.finished.connect(self._guided_tutorial_closed)
+        self._guided_tutorial = dialog
+        dialog.show()
+        dialog.raise_()
+
+    def _guided_tutorial_closed(self, result):
+        self._guided_tutorial = None
+
+    def _start_tutorial_example(self):
+        if not os.path.isfile(TUTORIAL_MODEL):
+            self._panel.append_error(
+                u"Учебная модель не найдена: %s" % TUTORIAL_MODEL)
+            return
+        self._attached_paths = [TUTORIAL_MODEL]
+        self._panel.set_attachments([os.path.basename(TUTORIAL_MODEL)])
+        self._panel._input.setText(
+            u"Покажи полный рабочий процесс на этой шестерне: "
+            u"проанализируй геометрию, выбери режим, материал и параметры, "
+            u"сориентируй модель и запусти слайсинг.")
+        self._panel._input.setFocus()
 
     def _open_settings(self):
         dialog = QDialog(self._panel)
@@ -990,9 +1304,25 @@ class WidgetsUI(QObject):
     def _open_tools(self):
         dialog = QDialog(self._panel)
         dialog.setWindowTitle(u"MCP-инструменты агента")
-        dialog.resize(420, 380)
+        dialog.resize(520, 460)
+        dialog.setStyleSheet("""
+            QDialog { background: %s; }
+            QListWidget {
+                background: %s; border: 1px solid %s; border-radius: 10px;
+                outline: none; padding: 6px;
+            }
+            QListWidget::item {
+                color: %s; padding: 8px 6px; border-bottom: 1px solid %s;
+            }
+            QListWidget::item:selected { background: %s; color: %s; }
+        """ % (C_BG, C_CARD, C_BORDER, C_TEXT, C_BORDER,
+               C_LIME_SOFT, C_TEXT))
         layout = QVBoxLayout(dialog)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(10)
         listing = QListWidget()
+        listing.setWordWrap(True)
+        listing.setUniformItemSizes(False)
         try:
             tools = self._extension.mcp.tools_list()
         except Exception:
@@ -1000,7 +1330,9 @@ class WidgetsUI(QObject):
         for tool in tools or []:
             name = tool.get("name", "?")
             description = (tool.get("description") or u"").strip()
-            listing.addItem(QListWidgetItem(u"%s\n%s" % (name, description[:150])))
+            item = QListWidgetItem(u"%s\n%s" % (name, description))
+            item.setToolTip(description)
+            listing.addItem(item)
         if not tools:
             listing.addItem(QListWidgetItem(u"(недоступно вне слайсера)"))
         layout.addWidget(listing)

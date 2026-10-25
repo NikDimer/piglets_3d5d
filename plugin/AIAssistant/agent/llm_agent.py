@@ -24,8 +24,7 @@ DEFAULT_MODEL_NAME = "dashscope/qwen3.8-flash"
 MAX_TOOL_ITERATIONS = 12
 HTTP_TIMEOUT = 240  # seconds
 MAX_TOOL_RESULT_CHARS = 6000
-
-SYSTEM_PROMPT = u"""Ты — «STE Copilot», ИИ-технолог по аддитивному производству компании Stereotech.
+SYSTEM_PROMPT = u"""Ты — Кали, ИИ-технолог по аддитивному производству компании Stereotech.
 Работаешь внутри слайсера STE Slicer (глубокий форк Cura). Основной принтер: Stereotech Hybrid 530 V5.2.4
 (5 осей, стол 330×330×250 мм, экструдер 0.4 мм). Ты настраиваешь печать через MCP-инструменты:
 находишь модель на столе или загружаешь её, выбираешь режим 3D/5D, материал, профиль и параметры,
@@ -264,7 +263,6 @@ class LLMAgent(object):
                     "tool_call_id": call.get("id"),
                     "content": _truncate(result_text),
                 })
-
         # iteration budget exhausted: force a final textual answer
         self.conversation.append({
             "role": "user",

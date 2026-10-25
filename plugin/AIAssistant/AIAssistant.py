@@ -8,6 +8,7 @@
 # Python 3.5 compatible, standard library only.
 
 import base64
+import binascii
 import json
 import os
 import re
@@ -35,12 +36,16 @@ PREF_API_URL = "ai_assistant/api_url"
 PREF_API_KEY = "ai_assistant/api_key"
 PREF_MODEL = "ai_assistant/model_name"
 PREF_RESULTS_DIR = "ai_assistant/results_dir"
+PREF_TUTORIAL = "ai_assistant/tutorial_choice"
 
-# Демо-ключ организаторов, опубликованный в материалах кейса (страница хакатона).
-# Хранится в настройках приложения; пользователь может заменить своим в UI.
-DEFAULT_API_KEY = "sk-YPkGgXM491sMIFz6bMDiMw"
+# API keys are supplied by the user and must not be distributed in source code.
+DEFAULT_API_KEY = ""
 
 MAX_BODY = 64 * 1024 * 1024  # 64 MB (stl + images)
+
+
+def _new_session_token():
+    return binascii.hexlify(os.urandom(32)).decode("ascii")
 
 
 class EventBus(object):
@@ -139,6 +144,25 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _authorized(self):
+        token = self.headers.get("X-STE-AI-Token")
+        if not token:
+            cookie = self.headers.get("Cookie") or ""
+            for item in cookie.split(";"):
+                name, separator, value = item.strip().partition("=")
+                if separator and name == "ste_ai_session":
+                    token = value
+                    break
+        if token != getattr(Handler.extension, "session_token", None):
+            self._send_json({"ok": False, "error": "unauthorized"}, 401)
+            return False
+        origin = self.headers.get("Origin")
+        if origin and origin not in ("http://127.0.0.1:8765",
+                                     "http://localhost:8765"):
+            self._send_json({"ok": False, "error": "forbidden origin"}, 403)
+            return False
+        return True
+
     def _read_json(self):
         try:
             length = int(self.headers.get("Content-Length") or 0)
@@ -152,7 +176,7 @@ class Handler(BaseHTTPRequestHandler):
         except Exception:
             return None
 
-    def _send_file(self, path, mime):
+    def _send_file(self, path, mime, set_session_cookie=False):
         try:
             with open(path, "rb") as f:
                 body = f.read()
@@ -165,6 +189,10 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         # never let the browser serve a stale UI from cache
         self.send_header("Cache-Control", "no-store, must-revalidate")
+        if set_session_cookie:
+            self.send_header("Set-Cookie",
+                             "ste_ai_session=%s; HttpOnly; SameSite=Strict; Path=/" %
+                             Handler.extension.session_token)
         self.end_headers()
         self.wfile.write(body)
 
@@ -181,7 +209,8 @@ class Handler(BaseHTTPRequestHandler):
                     query[k] = v
 
         if path in ("/", "/index.html"):
-            self._send_file(os.path.join(WEB_DIR, "index.html"), "text/html")
+            self._send_file(os.path.join(WEB_DIR, "index.html"), "text/html",
+                            set_session_cookie=True)
         elif path == "/style.css":
             self._send_file(os.path.join(WEB_DIR, "style.css"), "text/css")
         elif path == "/app.js":
@@ -195,7 +224,15 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_error(404, "Not found")
                 return
             self._send_file(os.path.join(WEB_DIR, "assets", name), mime)
-        elif path == "/api/status":
+        elif path.startswith("/api/"):
+            if not self._authorized():
+                return
+            self._handle_api_get(path, query, ext)
+        else:
+            self.send_error(404, "Not found")
+
+    def _handle_api_get(self, path, query, ext):
+        if path == "/api/status":
             try:
                 status = slicer_tools.get_status_snapshot()
             except Exception as e:
@@ -217,7 +254,8 @@ class Handler(BaseHTTPRequestHandler):
             prefs = ext.get_prefs()
             self._send_json({
                 "api_url": prefs.getValue(PREF_API_URL) or DEFAULT_API_URL,
-                "api_key": ext.get_api_key(),
+                "api_key": "",
+                "api_key_configured": ext.is_api_configured(),
                 "model_name": prefs.getValue(PREF_MODEL) or DEFAULT_MODEL_NAME,
                 "results_dir": slicer_tools.get_results_dir(),
             })
@@ -230,6 +268,9 @@ class Handler(BaseHTTPRequestHandler):
         ext = Handler.extension
         path = self.path.split("?")[0]
 
+        if path.startswith("/api/") or path == "/mcp":
+            if not self._authorized():
+                return
         if path == "/api/settings":
             data = self._read_json()
             if data is None:
@@ -308,7 +349,8 @@ class AIAssistant(Extension):
         self.mcp = MCPServer()
         self.agent = None
         self._agent_lock = threading.Lock()
-        self._manager = None      # native widgets UI (mascot + chat panel)
+        self._widgets_ui = None
+        self.session_token = _new_session_token()
 
         self._init_preferences()
         # autostart HTTP server and native chat window once the app is up
@@ -333,11 +375,12 @@ class AIAssistant(Extension):
             prefs.addPreference(PREF_API_KEY, DEFAULT_API_KEY)
             prefs.addPreference(PREF_MODEL, DEFAULT_MODEL_NAME)
             prefs.addPreference(PREF_RESULTS_DIR, RESULTS_DIR)
+            prefs.addPreference(PREF_TUTORIAL, "")
         except Exception as e:
             Logger.logException("e", "[AI Assistant] preferences init failed: %s" % e)
 
     def get_api_key(self):
-        """Stored key or the organizers' demo key from the case materials."""
+        """Return the user-supplied API key, if configured."""
         try:
             return self.get_prefs().getValue(PREF_API_KEY) or DEFAULT_API_KEY
         except Exception:
@@ -377,32 +420,29 @@ class AIAssistant(Extension):
         self._start_server()
         webbrowser.open("http://127.0.0.1:8765/")
 
-    # ------------- native widgets UI -------------
+    # ------------- native QML window -------------
 
     def _create_native_ui(self):
-        """QWidgets-based chat (QPainter text path). The old QML window had
-        a hard-freeze risk: the Qt build shipped with the slicer recurses
-        inside Qt Quick text rendering (see DESKTOP_VERSION_POSTMORTEM.md).
-        Widgets draw text through QWidget.paintEvent and bypass that bug."""
-        if self._manager is not None:
+        if self._widgets_ui is not None:
             return
         try:
             from .AIAssistantWidgets import WidgetsUI
-            self._manager = WidgetsUI(self)
-            self._manager.startup()
-            Logger.log("i", "[AI Assistant] QWidgets UI created (mascot in corner)")
+            self._widgets_ui = WidgetsUI(self)
+            self._widgets_ui.startup()
+            Logger.log("i", "[AI Assistant] native QWidget chat created")
+            return
+
         except Exception as e:
-            self._manager = None
-            Logger.logException("e", "[AI Assistant] widgets UI failed: %s" % e)
+            Logger.logException("e", "[AI Assistant] native UI failed: %s" % e)
 
     def showNativeChat(self):
         self._start_server()
-        if self._manager is None:
+        if self._widgets_ui is None:
             self._create_native_ui()
-        if self._manager is not None:
-            self._manager.show_panel()
+        if self._widgets_ui is not None:
+            self._widgets_ui.show_panel()
         else:
-            # widgets failed to load — fall back to the browser SPA
+            # Native UI failed to load — fall back to the browser SPA.
             self.showChat()
 
     # ------------- helpers for the widgets UI -------------
@@ -413,7 +453,11 @@ class AIAssistant(Extension):
             from steslicer.SteSlicerApplication import SteSlicerApplication
             window = SteSlicerApplication.getInstance().getMainWindow()
             if window is not None:
-                return (window.x(), window.y(), window.width(), window.height())
+                # x()/y() can be relative to a Qt parent. Native tool
+                # windows need the main window's global screen coordinates.
+                geometry = window.frameGeometry()
+                return (geometry.x(), geometry.y(),
+                        geometry.width(), geometry.height())
         except Exception:
             pass
         return None

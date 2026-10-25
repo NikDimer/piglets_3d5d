@@ -504,7 +504,10 @@ $("btn-settings").addEventListener("click", async () => {
     const res = await fetch("/api/settings");
     const s = await res.json();
     $("set-url").value = s.api_url || "";
-    $("set-key").value = s.api_key || "";
+    $("set-key").value = "";
+    $("set-key").placeholder = s.api_key_configured
+      ? "Оставьте пустым, чтобы сохранить текущий ключ"
+      : "sk-...";
     $("set-model").value = s.model_name || "";
   } catch (e) {}
   openModal("modal-settings");
@@ -516,7 +519,6 @@ $("btn-save-settings").addEventListener("click", async () => {
     api_key: $("set-key").value.trim(),
     model_name: $("set-model").value.trim(),
   };
-  if (!body.api_key) { toast("API-ключ не может быть пустым", true); return; }
   try {
     await fetch("/api/settings", {
       method: "POST",
