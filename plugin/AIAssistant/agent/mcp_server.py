@@ -96,7 +96,21 @@ def _t_arrange_clear(args):
 
 def _t_run_slicing(args):
     return T.run_slicing(wait=bool(args.get("wait", True)),
-                         timeout=float(args.get("timeout", 600)))
+                         timeout=float(args.get("timeout", 600)),
+                         stall_timeout=float(args.get("stall_timeout", 180)))
+
+
+def _t_read_slicer_log(args):
+    def _num(value, default):
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return default
+    return T.read_slicer_log(
+        limit=int(_num(args.get("limit"), 40)),
+        errors_only=bool(args.get("errors_only", False)),
+        minutes=_num(args.get("minutes"), None) if args.get("minutes") is not None else None,
+    )
 
 
 def _t_slicing_status(args):
@@ -180,9 +194,13 @@ TOOLS = [
         "name": "load_and_analyze_model",
         "description": "Загрузить 3D-модель (STL/OBJ/3MF) на стол слайсера и сразу "
                        "провести геометрический анализ STL: габариты, объём, нависания "
-                       "для 5 ориентаций, осевую симметрию и рекомендацию режима 3D/5D.",
+                       "для 5 ориентаций, осевую симметрию и рекомендацию режима 3D/5D. "
+                       "file_path можно передать полным путём ИЛИ просто именем файла — "
+                       "плагин сам ищет модель в рабочих папках (AIAssistant_files, "
+                       "последняя папка открытия слайсера, Рабочий стол/Документы/"
+                       "Загрузки). Если не найдено — в ошибке список доступных моделей.",
         "inputSchema": _schema({
-            "file_path": {"type": "string", "description": "полный путь к файлу модели"},
+            "file_path": {"type": "string", "description": "полный путь или имя файла модели"},
         }, ["file_path"]),
         "handler": _t_load_analyze,
     },
@@ -222,12 +240,41 @@ TOOLS = [
     {
         "name": "run_slicing",
         "description": "Запустить нарезку (слайсинг). При wait=true дожидается "
-                       "завершения (по умолчанию) и возвращает финальный статус.",
+                       "завершения (по умолчанию) и возвращает финальный статус. "
+                       "Если нарезка не удалась, ответ содержит фактическую "
+                       "причину сбоя: backend_error (ui_message — текст окна "
+                       "ошибки слайсера, job_result — код результата, job_error "
+                       "— исключение) и log_tail — последние ошибки из журнала "
+                       "слайсера. Это прямая инструкция агенту: разберите "
+                       "причину и устраните её (настройки, материал, "
+                       "геометрия, лицензия 5D); если строки мало — вызовите "
+                       "read_slicer_log.",
         "inputSchema": _schema({
             "wait": {"type": "boolean", "default": True},
             "timeout": {"type": "number", "default": 600, "description": "секунд ожидания"},
+            "stall_timeout": {"type": "number", "default": 180,
+                              "description": "секунд без прогресса до признания зависания"},
         }, []),
         "handler": _t_run_slicing,
+    },
+    {
+        "name": "read_slicer_log",
+        "description": "Прочитать журнал слайсера (steslicer.log): последние "
+                       "ошибки и предупреждения. ПРЯМАЯ ИНСТРУКЦИЯ АГЕНТУ: при "
+                       "любой ошибке, зависании или прерывании нарезки вызови "
+                       "этот инструмент и разбирай причину по строкам журнала. "
+                       "Типичные причины: неактивная лицензия 5D (упоминания "
+                       "license/ATSS), ошибки настроек, негерметичная модель, "
+                       "сбой внешних инструментов 5D-конвейера.",
+        "inputSchema": _schema({
+            "limit": {"type": "integer", "default": 40,
+                      "description": "максимум строк (1-200)"},
+            "errors_only": {"type": "boolean", "default": False,
+                            "description": "только ошибки, без предупреждений"},
+            "minutes": {"type": "number",
+                        "description": "окно за последние N минут (по умолчанию весь журнал)"},
+        }, []),
+        "handler": _t_read_slicer_log,
     },
     {
         "name": "get_slicing_status_and_result",

@@ -23,9 +23,138 @@ from UM.Logger import Logger
 _state_lock = threading.Lock()
 _state = {
     "initialized": False,
-    "slicing": {"state": "idle", "progress": 0.0, "message": ""},
+    "slicing": {"state": "idle", "progress": 0.0, "message": "",
+                "error": None, "started_at": None},
 }
 _results_dir_override = None
+
+# ----------------------------------------------------------------------------
+# slicer log capture — keeps recent warnings/errors so a failed slice can be
+# reported to the agent with the actual system error text, not a generic one
+# ----------------------------------------------------------------------------
+
+_LOG_RING_SIZE = 400       # ring buffer capacity for w/e/c log lines
+_LOG_TAIL_LIMIT = 12       # lines handed to the agent per failure
+_log_lock = threading.Lock()
+_log_ring = []             # list of (timestamp, log_type, message)
+_log_sink_installed = False
+
+
+class _SlicerLogSink(object):
+    """UM.Logger output that mirrors warnings/errors into an in-memory ring.
+
+    Catches everything the slicer logs from any thread: engine stderr,
+    5D-pipeline tool failures (openscad), exceptions — including cases where
+    the backend wedges in 'slicing' forever and no backendError is emitted."""
+
+    def log(self, log_type, message):
+        try:
+            if str(log_type) not in ("w", "e", "c"):
+                return
+            with _log_lock:
+                _log_ring.append((time.time(), str(log_type), str(message)))
+                if len(_log_ring) > _LOG_RING_SIZE:
+                    del _log_ring[:len(_log_ring) - _LOG_RING_SIZE]
+        except Exception:
+            pass
+
+
+def _install_log_sink():
+    global _log_sink_installed
+    if _log_sink_installed:
+        return
+    try:
+        Logger.addLogger(_SlicerLogSink())
+        _log_sink_installed = True
+    except Exception as e:
+        try:
+            Logger.log("w", "[AI Assistant] log sink install failed: %s" % e)
+        except Exception:
+            pass
+
+
+def _log_tail(since=None, limit=_LOG_TAIL_LIMIT):
+    """Recent warning/error log lines; errors/criticals first, warnings only
+    to fill up the limit. `since` bounds the slice time window."""
+    with _log_lock:
+        entries = list(_log_ring)
+    if since is not None:
+        entries = [e for e in entries if e[0] >= since]
+    serious = [e for e in entries if e[1] in ("e", "c")]
+    warnings = [e for e in entries if e[1] == "w"]
+    picked = (serious + warnings)[-limit:]
+    return ["[%s] %s" % (log_type, message[:300]) for _, log_type, message in picked]
+
+
+_LOG_FILE_LEVEL_TOKENS = (" - ERROR - ", " - CRITICAL - ", " - WARNING - ")
+
+
+def _slicer_log_files():
+    """On-disk slicer logs (*.log in the slicer config storage, e.g.
+    steslicer.log) newest first. Best-effort — may be empty outside the
+    slicer."""
+    try:
+        from UM.Resources import Resources
+        directory = Resources.getStoragePath(Resources.Resources)
+        files = []
+        for name in os.listdir(directory):
+            path = os.path.join(directory, name)
+            if name.lower().endswith(".log") and os.path.isfile(path):
+                files.append((os.path.getmtime(path), path))
+        return [path for _, path in sorted(files, reverse=True)]
+    except Exception:
+        return []
+
+
+def _tail_log_file(path, limit, errors_only):
+    """Last error/warning lines of an on-disk slicer log (Python logging
+    format: '2026-10-25 12:00:00,123 - ERROR - message')."""
+    try:
+        size = os.path.getsize(path)
+        with open(path, "rb") as f:
+            if size > 256 * 1024:
+                f.seek(-256 * 1024, os.SEEK_END)
+            data = f.read()
+        text = data.decode("utf-8", errors="ignore")
+    except Exception:
+        return []
+    wanted = (" - ERROR - ", " - CRITICAL - ") if errors_only else _LOG_FILE_LEVEL_TOKENS
+    picked = []
+    for line in text.replace("\r", "\n").split("\n"):
+        line = line.strip()
+        if line and any(token in line for token in wanted):
+            picked.append(line[:300])
+    return picked[-max(1, int(limit)):]
+
+
+def read_slicer_log(limit=40, errors_only=False, minutes=None):
+    """MCP tool: the slicer log for the agent. Returns the last warnings/
+    errors captured from UM.Logger (same stream that goes into steslicer.log)
+    and, when the in-memory ring is short, the tail of the newest on-disk
+    *.log from the slicer config folder."""
+    limit = max(1, min(int(limit), 200))
+    since = None
+    if minutes is not None:
+        try:
+            since = time.time() - float(minutes) * 60.0
+        except (TypeError, ValueError):
+            since = None
+    types = ("e", "c") if errors_only else ("w", "e", "c")
+    with _log_lock:
+        entries = [e for e in _log_ring if e[1] in types]
+    if since is not None:
+        entries = [e for e in entries if e[0] >= since]
+    lines = ["[%s] %s" % (log_type, message[:300])
+             for _, log_type, message in entries[-limit:]]
+    source = "ring"
+    if len(lines) < limit:
+        for path in _slicer_log_files()[:1]:
+            file_lines = _tail_log_file(path, limit - len(lines), errors_only)
+            if file_lines:
+                lines.extend(file_lines)
+                source = "ring+file:%s" % os.path.basename(path)
+                break
+    return {"source": source, "count": len(lines), "lines": lines[-limit:]}
 
 # printing mode values (STE Slicer fdmprinter.def.json -> "printing_mode")
 MODE_3D = "classic"
@@ -127,6 +256,7 @@ def execute_on_main_thread(func, *args, **kwargs):
 # ----------------------------------------------------------------------------
 
 def initialize():
+    _install_log_sink()
     with _state_lock:
         if _state["initialized"]:
             return
@@ -149,8 +279,13 @@ def _connect_backend_signals():
         backend.processingProgress.disconnect(_on_backend_progress)
     except TypeError:
         pass
+    try:
+        backend.backendError.disconnect(_on_backend_error)
+    except TypeError:
+        pass
     backend.backendStateChange.connect(_on_backend_state)
     backend.processingProgress.connect(_on_backend_progress)
+    backend.backendError.connect(_on_backend_error)
 
 
 def _on_backend_state(state):
@@ -172,6 +307,147 @@ def _on_backend_progress(progress):
         value = 0.0
     with _state_lock:
         _state["slicing"]["progress"] = max(0.0, min(1.0, value))
+
+
+# ----------------------------------------------------------------------------
+# backend error capture — the actual slicer-side failure reason
+# ----------------------------------------------------------------------------
+
+# StartJobResult IntEnum values shared by CuraEngineBackend (3D) and
+# CylindricalBackend (5D) StartSliceJob.
+START_JOB_RESULT_NAMES = {
+    1: "Finished",
+    2: "Error",
+    3: "SettingError",
+    4: "NothingToSlice",
+    5: "MaterialIncompatible",
+    6: "BuildPlateError",
+    7: "ObjectSettingError",
+    8: "ObjectsWithDisabledExtruder",
+}
+
+
+def _job_result_name(result):
+    try:
+        name = getattr(result, "name", None)
+        if name:
+            return str(name)
+    except Exception:
+        pass
+    try:
+        return START_JOB_RESULT_NAMES.get(int(result), str(result))
+    except (TypeError, ValueError):
+        return str(result)
+
+
+def _error_message_holders():
+    """UM.Message pop-ups currently held by the active backend (and any inner
+    backends it wraps in 5D mode) — their text is what the user sees on error."""
+    holders = []
+    try:
+        backend = get_app().getBackend()
+    except Exception:
+        return holders
+    candidates = [backend]
+    try:
+        inner = getattr(backend, "_backends", None)
+        if inner:
+            candidates.extend(list(inner.values()))
+    except Exception:
+        pass
+    for candidate in candidates:
+        message = getattr(candidate, "_error_message", None)
+        if message is not None:
+            holders.append(message)
+    return holders
+
+
+def _on_backend_error(job):
+    """backendError(job) handler: capture WHY the slice failed — the job's
+    result code/exception plus the pop-up text shown in the slicer UI — so
+    run_slicing can report the actual reason to the agent. May be called from
+    a Job worker thread; must never raise."""
+    info = {}
+    try:
+        error = job.getError()
+        if error:
+            info["job_error"] = "%s: %s" % (type(error).__name__, error)
+    except Exception:
+        pass
+    try:
+        result = job.getResult()
+        if result is not None:
+            info["job_result"] = _job_result_name(result)
+    except Exception:
+        pass
+    try:
+        message = job.getMessage()
+        if message:
+            info["job_message"] = str(message)
+    except Exception:
+        pass
+    for holder in _error_message_holders():
+        try:
+            text = holder.getText()
+        except Exception:
+            continue
+        if text:
+            info["ui_message"] = str(text)
+            try:
+                title = holder.getTitle()
+                if title:
+                    info["ui_title"] = str(title)
+            except Exception:
+                pass
+            break
+    with _state_lock:
+        _state["slicing"]["error"] = info
+        summary = (info.get("ui_message") or info.get("job_error")
+                   or info.get("job_message") or u"ошибка нарезки")
+        _state["slicing"]["message"] = summary[:200]
+
+
+def _wait_for_error_details(timeout=3.0):
+    """backendStateChange(Error) is emitted just before backendError(job);
+    poll briefly so the captured reason lands before the error is reported."""
+    deadline = time.time() + float(timeout)
+    while time.time() < deadline:
+        with _state_lock:
+            if _state["slicing"].get("error"):
+                return True
+        time.sleep(0.1)
+    return False
+
+
+def _collect_slicing_failure(final_state, since=None):
+    """Everything known about why a slice failed: the backendError payload
+    (UI message + job result/exception) and the slicer log tail."""
+    with _state_lock:
+        backend_error = dict(_state["slicing"].get("error") or {})
+    return {
+        "final_state": final_state,
+        "backend_error": backend_error,
+        "log_tail": _log_tail(since=since),
+    }
+
+
+def _format_slicing_failure(details):
+    """Human-readable lines for the error text handed to the agent."""
+    lines = []
+    err = details.get("backend_error") or {}
+    if err.get("ui_message"):
+        title = err.get("ui_title")
+        lines.append(u"сообщение слайсера: %s%s" %
+                     (u"[%s] " % title if title else u"", err["ui_message"]))
+    if err.get("job_result"):
+        lines.append(u"код результата: %s" % err["job_result"])
+    if err.get("job_error"):
+        lines.append(u"исключение: %s" % err["job_error"])
+    if err.get("job_message"):
+        lines.append(u"детали: %s" % err["job_message"])
+    for entry in details.get("log_tail") or []:
+        lines.append(u"журнал: %s" % entry)
+    return lines
 
 
 # ----------------------------------------------------------------------------
@@ -243,6 +519,8 @@ def write_setting(key, value):
     value = _coerce_setting_value(definition, value)
     written = []
     ext = get_extruder_stack()
+    prev_ext = _saved_user_change(ext, key) if ext is not None else None
+    prev_global = _saved_user_change(stack, key)
     if ext is not None:
         try:
             ext.userChanges.setProperty(key, "value", value)
@@ -257,7 +535,20 @@ def write_setting(key, value):
     if not written:
         raise RuntimeError("не удалось записать настройку %s" % key)
 
+    # Reject out-of-range values right here: in 5D this build's
+    # CylindricalBackend crashes the whole app on an invalid setting.
+    state, limits = _validation_info(key)
+    if _is_validation_error(state):
+        _revert_user_change(ext, key, prev_ext)
+        _revert_user_change(stack, key, prev_global)
+        raise ValueError(
+            u"значение %s=%s отклонено: %s (min=%s, max=%s) — вне "
+            u"допустимого диапазона, с ним слайсер падает; запись отменена"
+            % (key, _jsonify(value), _state_name(state),
+               limits.get("minimum_value"), limits.get("maximum_value")))
+
     variants = []
+    skipped_twins = []
     for suffix in ("_classic", "_cylindrical"):
         twin = key + suffix
         twin_def = _stack_definition(stack, twin)
@@ -265,12 +556,211 @@ def write_setting(key, value):
             continue
         try:
             twin_value = _coerce_setting_value(twin_def, value)
+            prev_twin = _saved_user_change(stack, twin)
             stack.userChanges.setProperty(twin, "value", twin_value)
+            twin_state, twin_limits = _validation_info(twin)
+            if _is_validation_error(twin_state):
+                _revert_user_change(stack, twin, prev_twin)
+                skipped_twins.append(
+                    u"%s=%s (%s; min=%s, max=%s)"
+                    % (twin, _jsonify(twin_value), _state_name(twin_state),
+                       twin_limits.get("minimum_value"),
+                       twin_limits.get("maximum_value")))
+                continue
             variants.append(twin)
+        except ValueError:
+            raise
         except Exception as e:
             Logger.log("w", "[AI Assistant] twin write failed for %s: %s" % (twin, e))
-    return {"key": key, "value": _jsonify(value),
-            "written_to": written, "variants": variants}
+    result = {"key": key, "value": _jsonify(value),
+              "written_to": written, "variants": variants}
+    if skipped_twins:
+        result["skipped_twins"] = skipped_twins
+    return result
+
+
+def _validation_info(key):
+    """Validation state of a setting the same way the slicer's StartSliceJob
+    checks it ('validationState'), plus resolved min/max for the message."""
+    stack = get_global_stack()
+    if stack is None:
+        return None, {}
+    try:
+        state = stack.getProperty(key, "validationState")
+    except Exception:
+        return None, {}
+    limits = {}
+    for prop in ("minimum_value", "maximum_value"):
+        try:
+            limits[prop] = _jsonify(stack.getProperty(key, prop))
+        except Exception:
+            pass
+    return state, limits
+
+
+def _is_validation_error(state):
+    if state is None:
+        return False
+    name = str(getattr(state, "name", state))
+    return name.endswith("Error") or name == "Exception"
+
+
+def _state_name(state):
+    return str(getattr(state, "name", state))
+
+
+def _revert_user_change(container, key, previous):
+    """Undo a userChanges write: restore the old value or drop the override."""
+    if container is None:
+        return
+    try:
+        if previous is None:
+            container.userChanges.removeProperty(key, "value")
+        else:
+            container.userChanges.setProperty(key, "value", previous)
+    except Exception as e:
+        Logger.log("w", "[AI Assistant] revert %s failed: %s" % (key, e))
+
+
+def _saved_user_change(container, key):
+    try:
+        return container.userChanges.getProperty(key, "value")
+    except Exception:
+        return None
+
+
+def _clamp_to_range(value, limits):
+    """Clamp a numeric value into [min, max]; None when not applicable."""
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    lo = limits.get("minimum_value")
+    hi = limits.get("maximum_value")
+    try:
+        lo = float(lo) if lo is not None else None
+    except (TypeError, ValueError):
+        lo = None
+    try:
+        hi = float(hi) if hi is not None else None
+    except (TypeError, ValueError):
+        hi = None
+    if lo is None and hi is None:
+        return None
+    clamped = number
+    if lo is not None and clamped < lo:
+        clamped = lo
+    if hi is not None and clamped > hi:
+        clamped = hi
+    if abs(clamped - number) < 1e-12:
+        return None
+    if isinstance(value, int) and not isinstance(value, bool):
+        return int(clamped)
+    return clamped
+
+
+def _scan_invalid_settings():
+    """Settings currently in a hard-error validation state:
+    [(stack, key, value, state), ...]."""
+    stack = get_global_stack()
+    stacks = [stack]
+    try:
+        stacks.extend(list((stack.extruders or {}).values()))
+    except Exception:
+        pass
+    bad = []
+    for st in stacks:
+        if st is None:
+            continue
+        try:
+            keys = list(st.getAllKeys())
+        except Exception:
+            continue
+        for key in keys:
+            try:
+                state = st.getProperty(key, "validationState")
+            except Exception:
+                continue
+            if _is_validation_error(state):
+                try:
+                    value = st.getProperty(key, "value")
+                except Exception:
+                    value = None
+                bad.append((st, key, value, state))
+    return bad
+
+
+def _setting_limits(st, key):
+    limits = {}
+    for prop in ("minimum_value", "maximum_value"):
+        try:
+            limits[prop] = _jsonify(st.getProperty(key, prop))
+        except Exception:
+            pass
+    return limits
+
+
+def _repair_invalid_settings():
+    """Auto-fix settings in a hard-error validation state so the engine
+    agrees to slice: clamp into [min, max], else reset to the definition
+    default. Returns human-readable list of fixes / unresolved keys."""
+    fixes = []
+    for st, key, value, state in _scan_invalid_settings():
+        limits = _setting_limits(st, key)
+        clamped = _clamp_to_range(value, limits)
+        if clamped is not None:
+            try:
+                st.userChanges.setProperty(key, "value", clamped)
+                if not _is_validation_error(st.getProperty(key, "validationState")):
+                    fixes.append(u"%s: %s -> %s (подрезано по диапазону)"
+                                 % (key, _jsonify(value), _jsonify(clamped)))
+                    continue
+            except Exception:
+                pass
+        try:
+            definition = _stack_definition(st, key)
+            default = getattr(definition, "default", None)
+            if default is None:
+                default = getattr(definition, "defaultValue", None)
+            if default is not None:
+                st.userChanges.setProperty(key, "value", default)
+                if not _is_validation_error(st.getProperty(key, "validationState")):
+                    fixes.append(u"%s: %s -> %s (сброшено на default)"
+                                 % (key, _jsonify(value), _jsonify(default)))
+                    continue
+        except Exception:
+            pass
+        fixes.append(u"%s=%s (%s) — НЕ ИСПРАВЛЕНО, исправьте вручную "
+                     u"set_slicer_settings" % (key, _jsonify(value),
+                                               _state_name(state)))
+    return fixes
+
+
+def _preflight_settings_check():
+    """Before forceSlice: auto-repair invalid settings (the engine refuses to
+    slice with them, and this build's CylindricalBackend crashes the app on
+    ObjectSettingError in 5D). Slice only what could not be repaired is a
+    blocker."""
+    try:
+        if not get_app().getMachineManager().stacksHaveErrors:
+            return
+    except Exception:
+        return  # cannot tell — let the backend report it
+    fixes = _repair_invalid_settings()
+    if fixes:
+        Logger.log("w", "[AI Assistant] auto-fixed settings: %s"
+                   % "; ".join(fixes))
+        with _state_lock:
+            _state["slicing"]["auto_fixed"] = fixes[:20]
+    remaining = _scan_invalid_settings()
+    if remaining:
+        raise RuntimeError(
+            u"нарезка не запущена: не удалось исправить настройки — %s. "
+            u"Исправьте ключи через set_slicer_settings: значение должно "
+            u"быть в диапазоне min..max (диапазон есть в ответе инструмента)"
+            % u"; ".join(u"%s=%s (%s)" % (key, _jsonify(value),
+                                          _state_name(state))
+                         for _, key, value, state in remaining[:20]))
 
 
 def write_settings_batch(settings):
@@ -734,12 +1224,125 @@ def get_scene_objects():
     return execute_on_main_thread(_collect)
 
 
+_MODEL_EXTENSIONS = (".stl", ".obj", ".3mf", ".ply", ".amf")
+
+
+def _strip_upload_prefix(name):
+    """Web uploads are saved as '<millis>_<original name>' — drop the prefix."""
+    parts = str(name).split("_", 1)
+    if len(parts) == 2 and parts[0].isdigit() and len(parts[0]) >= 8:
+        return parts[1]
+    return str(name)
+
+
+def _model_search_dirs():
+    """Folders where a bare model filename may actually live (the slicer's
+    CWD is its install dir, so abspath alone points the wrong way)."""
+    dirs = []
+
+    def _add(path):
+        try:
+            path = str(path)
+            if path and os.path.isdir(path) and path not in dirs:
+                dirs.append(path)
+        except Exception:
+            pass
+
+    # plugin work dir (web uploads) + results dir, <config>/ level
+    try:
+        plugins_dir = os.path.dirname(os.path.dirname(os.path.dirname(
+            os.path.abspath(__file__))))
+        config_dir = os.path.dirname(plugins_dir)
+        _add(os.path.join(config_dir, "AIAssistant_files"))
+        _add(os.path.join(config_dir, "AIAssistant_results"))
+    except Exception:
+        pass
+    # the folder the user last loaded a model from (slicer file dialog)
+    try:
+        _add(get_app().getPreferences().getValue("local_file/dialog_load_path"))
+    except Exception:
+        pass
+    # common user folders
+    home = os.path.expanduser("~")
+    for name in ("Desktop", "Documents", "Downloads"):
+        _add(os.path.join(home, name))
+    return dirs
+
+
+def _resolve_model_path(file_path):
+    """Locate the model file even when the agent passes a bare filename or
+    a path glued to the slicer's install dir. Exact file -> exact basename in
+    known dirs -> upload-prefixed/stem match -> shallow walk (depth 2)."""
+    raw = str(file_path).strip().strip('"').strip("'")
+    candidate = os.path.abspath(raw)
+    if os.path.isfile(candidate):
+        return candidate
+    base = os.path.basename(raw.replace("\\", "/"))
+    stem = base.rsplit(".", 1)[0].lower()
+    ext = ("." + base.rsplit(".", 1)[1].lower()) if "." in base else ""
+    dirs = _model_search_dirs()
+
+    def _match(name):
+        low = str(name).lower()
+        if low == base.lower():
+            return True
+        cleaned = _strip_upload_prefix(low)
+        if cleaned == base.lower():
+            return True
+        return bool(ext) and cleaned.endswith(ext) and \
+            cleaned.rsplit(".", 1)[0] == stem
+
+    for directory in dirs:                      # exact name in known dirs
+        path = os.path.join(directory, base)
+        if os.path.isfile(path):
+            return path
+    for directory in dirs:                      # prefixed/case match, depth 0
+        try:
+            names = os.listdir(directory)[:2000]
+        except Exception:
+            continue
+        for name in names:
+            path = os.path.join(directory, name)
+            if _match(name) and os.path.isfile(path):
+                return path
+    walk = list(dirs)                           # shallow walk, depth 2
+    for _ in range(2):
+        next_level = []
+        for d in walk:
+            try:
+                entries = os.listdir(d)[:2000]
+            except Exception:
+                continue
+            for name in entries:
+                path = os.path.join(d, name)
+                if os.path.isfile(path):
+                    if _match(name):
+                        return path
+                else:
+                    next_level.append(path)
+        walk = next_level
+    hints = []
+    for directory in dirs:
+        try:
+            found = [n for n in os.listdir(directory)
+                     if n.lower().endswith(_MODEL_EXTENSIONS)][:10]
+            if found:
+                hints.append(u"%s: %s" % (directory, u"; ".join(found)))
+        except Exception:
+            pass
+    raise ValueError(
+        u"файл не найден: %s (путь %s — это папка установки слайсера, модель "
+        u"лежит в другом месте). Искали в: %s. %s. Передайте полный путь или "
+        u"точное имя из списка выше."
+        % (raw, candidate, u"; ".join(dirs),
+           (u"Доступные модели: " + u" | ".join(hints)) if hints
+           else u"В рабочих папках моделей не найдено"))
+
+
 def load_model(file_path):
     """Load a model file onto the build plate; returns info about the new node."""
     from PyQt5.QtCore import QUrl
-    file_path = os.path.abspath(str(file_path))
-    if not os.path.isfile(file_path):
-        raise ValueError("файл не найден: %s" % file_path)
+    file_path = _resolve_model_path(file_path)
 
     before = _node_snapshot()
 
@@ -782,6 +1385,7 @@ def load_model(file_path):
         return _node_info(node)
     info = execute_on_main_thread(_place)
     info["source_file"] = os.path.basename(file_path)
+    info["resolved_path"] = file_path
     return info
 
 
@@ -891,24 +1495,32 @@ def run_slicing(wait=True, timeout=600, stall_timeout=180):
     for stall_timeout seconds — this happens when the 5D pipeline's external
     tools fail (e.g. openscad intersection dies: 'Failed to intersect model!'
     in steslicer.log) and the backend wedges in 'slicing' at 0% forever.
-    Waiting the full timeout in that case just wastes 10 minutes."""
+    Waiting the full timeout in that case just wastes 10 minutes.
+
+    On any failure the agent gets the actual slicer-side reason: the
+    backendError payload (UI pop-up text, job result code, exception) plus
+    the tail of the slicer log — see _collect_slicing_failure."""
+    started_at = time.time()
+
     def _start():
         initialize()
         _connect_backend_signals()
         backend = get_app().getBackend()
         if backend is None:
             raise RuntimeError("бэкенд слайсинга недоступен")
+        _preflight_settings_check()  # invalid settings crash 5D slicing
         backend.forceSlice()
         with _state_lock:
             _state["slicing"] = {"state": "slicing", "progress": 0.0,
-                                 "message": "запущена нарезка"}
+                                 "message": u"запущена нарезка",
+                                 "error": None, "started_at": started_at}
         return True
     execute_on_main_thread(_start)
     if not wait:
         return {"started": True}
-    started_at = time.time()
     last_progress = -1.0
     last_change = started_at
+    idle_since = None
     while True:
         with _state_lock:
             slicing = dict(_state["slicing"])
@@ -917,28 +1529,74 @@ def run_slicing(wait=True, timeout=600, stall_timeout=180):
             return {"started": True, "final_state": "done",
                     "progress": 1.0, "result": get_slicing_result()}
         if slicing["state"] == "error":
-            raise RuntimeError("слайсинг завершился с ошибкой (проверьте журнал "
-                               "слайсера и активную лицензию для 5D)")
+            # backendStateChange(Error) fires right before backendError(job):
+            # give the payload a moment to land so the reason is not lost
+            _wait_for_error_details(3.0)
+            details = _collect_slicing_failure("error", started_at - 2.0)
+            lines = _format_slicing_failure(details)
+            message = u"слайсинг завершился с ошибкой"
+            if lines:
+                message += u":\n" + u"\n".join(lines)
+            else:
+                message += (u" (причина не зафиксирована в сигналах бэкенда — "
+                            u"вызови инструмент read_slicer_log и разбери "
+                            u"журнал; в 5D частая причина — неактивная "
+                            u"лицензия)")
+            raise RuntimeError(message)
         if slicing["state"] == "slicing":
+            idle_since = None
             if abs(slicing.get("progress", 0.0) - last_progress) > 1e-6:
                 last_progress = slicing.get("progress", 0.0)
                 last_change = now
             elif now - last_change >= stall_timeout:
+                details = _collect_slicing_failure("stalled", started_at - 2.0)
                 return {
                     "started": True, "final_state": "stalled",
                     "progress": last_progress,
                     "stalled_seconds": int(now - last_change),
-                    "hint": u"движок нарезки застрял без прогресса — вероятная "
-                            u"причина: сбой внешних инструментов 5D-конвейера "
-                            u"(openscad intersection, см. 'Failed to intersect "
-                            u"model!' в steslicer.log) или негерметичная "
-                            u"(не-watertight) модель. Помогает: перезапуск "
-                            u"слайсера, режим 3D (classic) вместо 5D, проверка "
-                            u"модели на замкнутость оболочки.",
+                    "backend_error": details["backend_error"],
+                    "log_tail": details["log_tail"],
+                    "hint": u"это прямая инструкция тебе, а не системное "
+                            u"сообщение: движок застрял без прогресса. Разбери "
+                            u"причину по log_tail (сбой 5D-конвейера: openscad "
+                            u"'Failed to intersect model!', негерметичная "
+                            u"модель) или вызови read_slicer_log. Исправляй "
+                            u"сам: повтори в 3D (classic), проверь модель на "
+                            u"замкнутость; если в журнале про лицензию — "
+                            u"сообщи пользователю точную причину.",
+                }
+        elif slicing["state"] == "idle":
+            # Backend went back to NotStarted without finishing: the start job
+            # was rejected (e.g. MaterialIncompatible without platform
+            # activity) or cancelled — report it instead of idling to timeout.
+            if idle_since is None:
+                idle_since = now
+            elif now - idle_since >= 5.0:
+                details = _collect_slicing_failure("aborted", started_at - 2.0)
+                return {
+                    "started": True, "final_state": "aborted",
+                    "progress": slicing.get("progress", 0.0),
+                    "backend_error": details["backend_error"],
+                    "log_tail": details["log_tail"],
+                    "hint": u"это прямая инструкция тебе: бэкенд вернулся в "
+                            u"idle, не завершив нарезку — задание, вероятно, "
+                            u"отклонено (несовместимый материал/настройки) "
+                            u"или отменено. Причина — в backend_error и "
+                            u"log_tail; если неясна — вызови read_slicer_log "
+                            u"и исправь причину сам.",
                 }
         if now - started_at >= float(timeout):
+            details = _collect_slicing_failure("timeout", started_at - 2.0)
             return {"started": True, "final_state": "timeout",
-                    "progress": slicing.get("progress", 0.0)}
+                    "progress": slicing.get("progress", 0.0),
+                    "backend_error": details["backend_error"],
+                    "log_tail": details["log_tail"],
+                    "hint": u"это прямая инструкция тебе: истек таймаут "
+                            u"ожидания. Разбери по log_tail, что делал "
+                            u"движок (read_slicer_log — если нужно больше "
+                            u"строк), и реши: ждать дольше (timeout=...), "
+                            u"исправить настройки/геометрию или повторить "
+                            u"в 3D (classic)."}
         time.sleep(0.3)
 
 
@@ -1507,7 +2165,7 @@ def _recommend_mode(sym, skew, cross, best_axis, bbox, fill_ratio):
 def load_and_analyze_model(file_path):
     info = load_model(file_path)
     try:
-        analysis = analyze_stl_geometry(file_path)
+        analysis = analyze_stl_geometry(info.get("resolved_path") or file_path)
     except ValueError as e:
         # not an STL (obj/3mf) — return scene info only
         analysis = {"note": "геометрический анализ поддержан только для STL: %s" % e}

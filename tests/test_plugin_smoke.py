@@ -143,8 +143,8 @@ print("[OK ] initialize ->", init["serverInfo"])
 
 tools = mcp.handle_request({"jsonrpc": "2.0", "id": 2, "method": "tools/list"}).get("tools")
 print("[OK ] tools/list -> {} tools: {}".format(len(tools), ", ".join(sorted(t["name"] for t in tools))))
-if len(tools) != 13:
-    failures.append("expected 13 tools, got %d" % len(tools))
+if len(tools) != 14:
+    failures.append("expected 14 tools, got %d" % len(tools))
 
 schema = mcp.get_openai_tools_schema()
 assert schema[0]["type"] == "function" and "parameters" in schema[0]["function"]
@@ -200,11 +200,81 @@ for kw in [u"Шестерня", u"Колесо конвейерной линии
 
 for must in ["cylindrical", "cylindrical_full", "classic",
              "cylindrical_mode_base_diameter", "set_printing_mode",
-             "load_and_analyze_model", "export_project_and_gcode"]:
+             "load_and_analyze_model", "export_project_and_gcode",
+             "read_slicer_log"]:
     if must in SYSTEM_PROMPT:
         print("[OK ] prompt mentions: " + must)
     else:
         failures.append("system prompt missing: " + must)
+
+print()
+print("=" * 78)
+print("TEST 5: slicing failure diagnostics (backendError capture + log tail)")
+print("=" * 78)
+
+
+class _FakeJob(object):
+    def getError(self):
+        return ValueError("license expired")
+
+    def getResult(self):
+        return 3  # StartJobResult.SettingError
+
+    def getMessage(self):
+        return None
+
+
+class _FakeMessage(object):
+    def getText(self):
+        return u"Unable to slice with the current settings. The following settings have errors: Layer Height"
+
+    def getTitle(self):
+        return u"Unable to slice"
+
+
+_orig_holders = T._error_message_holders
+T._error_message_holders = lambda: [_FakeMessage()]
+try:
+    with T._state_lock:
+        T._state["slicing"] = {"state": "error", "progress": 0.0, "message": "",
+                               "error": None, "started_at": time.time()}
+    T._on_backend_error(_FakeJob())
+    with T._state_lock:
+        captured = dict(T._state["slicing"].get("error") or {})
+    ok_capture = (captured.get("job_result") == "SettingError"
+                  and "license expired" in captured.get("job_error", "")
+                  and u"Layer Height" in captured.get("ui_message", "")
+                  and captured.get("ui_title") == u"Unable to slice")
+    print("[{}] backendError captured: {}".format("OK " if ok_capture else "FAIL", captured))
+    if not ok_capture:
+        failures.append("backend error capture failed: %s" % captured)
+
+    with T._log_lock:
+        T._log_ring[:] = [(time.time(), "e",
+                           "[MainThread] steslicer.X [42]: Failed to intersect model!")]
+    details = T._collect_slicing_failure("error", None)
+    text = u"\n".join(T._format_slicing_failure(details))
+    ok_text = (u"Unable to slice" in text and "SettingError" in text
+               and "license expired" in text
+               and "Failed to intersect model!" in text)
+    print("[{}] failure text = ui message + result + exception + log tail".format(
+        "OK " if ok_text else "FAIL"))
+    if not ok_text:
+        failures.append("slicing failure text missing parts: %s" % text[:300])
+
+    log_result = mcp.call_tool("read_slicer_log", {"limit": 5})
+    ok_tool = (isinstance(log_result.get("lines"), list)
+               and any("Failed to intersect model!" in line
+                       for line in log_result["lines"]))
+    print("[{}] read_slicer_log tool -> {} lines".format(
+        "OK " if ok_tool else "FAIL", log_result.get("count")))
+    if not ok_tool:
+        failures.append("read_slicer_log did not return the seeded error: %s"
+                        % log_result)
+finally:
+    T._error_message_holders = _orig_holders
+    with T._log_lock:
+        del T._log_ring[:]
 
 print()
 print("=" * 78)

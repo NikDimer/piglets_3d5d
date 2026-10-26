@@ -22,7 +22,8 @@ from UM.Logger import Logger
 
 from .agent import slicer_tools
 from .agent.mcp_server import MCPServer
-from .agent.llm_agent import LLMAgent, DEFAULT_API_URL, DEFAULT_MODEL_NAME
+from .agent.llm_agent import (LLMAgent, AgentStopped, DEFAULT_API_URL,
+                              DEFAULT_MODEL_NAME)
 
 PLUGIN_DIR = os.path.dirname(os.path.abspath(__file__))
 WEB_DIR = os.path.join(PLUGIN_DIR, "web")
@@ -308,6 +309,7 @@ class AIAssistant(Extension):
         self.mcp = MCPServer()
         self.agent = None
         self._agent_lock = threading.Lock()
+        self._stop_event = threading.Event()
         self._manager = None      # native widgets UI (mascot + chat panel)
 
         self._init_preferences()
@@ -418,6 +420,17 @@ class AIAssistant(Extension):
             pass
         return None
 
+    def get_main_window_id(self):
+        """Native window id of the slicer main window (for screenshots)."""
+        try:
+            from steslicer.SteSlicerApplication import SteSlicerApplication
+            window = SteSlicerApplication.getInstance().getMainWindow()
+            if window is not None:
+                return int(window.winId())
+        except Exception:
+            pass
+        return 0
+
     def is_main_window_active(self):
         try:
             from steslicer.SteSlicerApplication import SteSlicerApplication
@@ -445,6 +458,81 @@ class AIAssistant(Extension):
             "api_key": self.get_api_key(),
             "model_name": prefs.getValue(PREF_MODEL) or DEFAULT_MODEL_NAME,
         }
+
+    def get_settings_reference(self):
+        """Print-settings reference for the learning dialog: sections with
+        their parameters, labels/descriptions straight from the slicer's
+        own setting definitions (already translated), plus the current
+        value of each parameter. Must run on the Qt main thread."""
+        try:
+            from steslicer.SteSlicerApplication import SteSlicerApplication
+            stack = SteSlicerApplication.getInstance().getGlobalContainerStack()
+            definition = stack.getBottom()
+        except Exception:
+            return []
+
+        def param(node):
+            value = u"—"
+            try:
+                raw = stack.getProperty(node.key, "value")
+                unit = getattr(node, "unit", "") or ""
+                value = (u"%s %s" % (raw, unit)).strip()
+            except Exception:
+                pass
+            return {
+                "key": node.key,
+                "label": getattr(node, "label", "") or node.key,
+                "description": getattr(node, "description", "") or "",
+                "value": value,
+            }
+
+        def walk(node, prefix, out_sections):
+            section = {
+                "title": (prefix + (getattr(node, "label", "")
+                                    or node.key)).strip(),
+                "description": getattr(node, "description", "") or "",
+                "params": [],
+            }
+            for child in node.children:
+                if not bool(getattr(child, "visible", True)):
+                    continue
+                if child.children:
+                    walk(child, prefix + u"— ", out_sections)
+                else:
+                    section["params"].append(param(child))
+            if section["params"]:
+                out_sections.append(section)
+
+        sections = []
+        misc = {"title": u"(Прочее)", "description": u"", "params": []}
+        try:
+            roots = [d for d in definition.definitions if d.parent is None]
+            for root in roots:
+                if not bool(getattr(root, "visible", True)):
+                    continue
+                kids = [c for c in root.children
+                        if bool(getattr(c, "visible", True))]
+                if kids:
+                    section = {
+                        "title": (getattr(root, "label", "")
+                                  or root.key).strip(),
+                        "description": getattr(root, "description", "") or "",
+                        "params": [],
+                    }
+                    for child in kids:
+                        if child.children:
+                            walk(child, u"— ", sections)
+                        else:
+                            section["params"].append(param(child))
+                    if section["params"]:
+                        sections.append(section)
+                else:
+                    misc["params"].append(param(root))
+            if misc["params"]:
+                sections.append(misc)
+        except Exception:
+            return []
+        return sections
 
     def get_slicing_snapshot(self):
         try:
@@ -512,8 +600,17 @@ class AIAssistant(Extension):
                          daemon=True).start()
         return True, None
 
+    def request_stop(self):
+        """Ask the running agent turn to stop at the next checkpoint
+        (between LLM iterations / tool calls)."""
+        if self.chat.is_busy():
+            self._stop_event.set()
+            return True
+        return False
+
     def _run_agent(self, text, saved):
         self.chat.set_busy(True)
+        self._stop_event.clear()
         self.bus.push("status", {"state": "thinking"})
         try:
             prefs = self.get_prefs()
@@ -524,14 +621,21 @@ class AIAssistant(Extension):
                         api_key=self.get_api_key(),
                         model_name=prefs.getValue(PREF_MODEL) or DEFAULT_MODEL_NAME,
                         mcp=self.mcp,
-                        on_event=self._agent_event)
+                        on_event=self._agent_event,
+                        stop_event=self._stop_event)
                 else:
                     # settings may have changed since the previous turn
                     self.agent.api_url = (prefs.getValue(PREF_API_URL) or "").rstrip("/")
                     self.agent.api_key = self.get_api_key()
                     self.agent.model_name = prefs.getValue(PREF_MODEL) or self.agent.model_name
+                    self.agent.stop_event = self._stop_event
             reply, tool_cards = self.agent.run(text, saved)
             msg = {"role": "assistant", "text": reply, "tool_cards": tool_cards}
+            self.chat.append(msg)
+            self.bus.push("assistant", msg)
+        except AgentStopped:
+            msg = {"role": "assistant", "text":
+                   "⏹ Остановлено по вашему запросу.", "tool_cards": []}
             self.chat.append(msg)
             self.bus.push("assistant", msg)
         except Exception as e:

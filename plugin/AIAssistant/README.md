@@ -121,7 +121,8 @@ python tools/preview_widgets.py --stay   # оставить окно откры�
 | `get_scene_objects` | список объектов на столе |
 | `transform_model` | перемещение / поворот / масштаб + опускание на стол |
 | `arrange_and_clear_scene` | авто-расстановка / очистка стола |
-| `run_slicing` | запуск нарезки с ожиданием |
+| `run_slicing` | запуск нарезки с ожиданием; при сбое возвращает причину: `backend_error` (текст окна ошибки `ui_message`, код `job_result`, исключение `job_error`) + `log_tail` — последние ошибки из журнала слайсера |
+| `read_slicer_log` | журнал слайсера (steslicer.log): последние ошибки/предупреждения; агент обязан вызывать при любом сбое нарезки |
 | `get_slicing_status_and_result` | статус, прогресс, время печати, расход материала |
 | `export_project_and_gcode` | экспорт `project.3mf` + `result.gcode` |
 

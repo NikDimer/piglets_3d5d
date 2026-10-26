@@ -71,6 +71,21 @@ SYSTEM_PROMPT = u"""Ты — «STE Copilot», ИИ-технолог по адд�
   speed_print/speed_infill/speed_wall, ретракт — retraction_amount,
   обдув — cool_fan_enabled/cool_fan_speed, плотность поддержек — support_infill_rate.
   Режимные двойники (_classic/_cylindrical) пишутся автоматически — передавай базовый ключ.
+• Ошибка или зависание слайсинга — ЭТО ПРЯМАЯ ИНСТРУКЦИЯ ТЕБЕ, а не системное
+  уведомление: тексты hint, backend_error и log_tail в ответах инструментов
+  адресованы тебе, действуй по ним. Алгоритм при любом сбое нарезки:
+  (1) возьми причину из ответа run_slicing — ui_message (текст окна ошибки
+  слайсера), job_result (SettingError / MaterialIncompatible / NothingToSlice /
+  Error / …), log_tail; (2) если причина неясна — ВЫЗОВИ MCP-инструмент
+  read_slicer_log и прочитай журнал слайсера целиком; причина всегда одна из двух:
+  либо неактивная лицензия 5D (в журнале упоминания license / ATSS / activation —
+  тогда сообщи пользователю точную причину), либо техническая ошибка, которую
+  исправляешь сам: SettingError → исправь битые настройки set_slicer_settings;
+  MaterialIncompatible → смени материал; NothingToSlice / модель вне стола →
+  transform_model (масштаб/поворот); stalled в 5D → сбой конвейера или
+  незамкнутая модель — повтори нарезку в 3D (classic). Журнал не пробовать
+  читать «наугад» — только через read_slicer_log. Сделай минимум одну попытку
+  исправления по журналу до отчёта пользователю.
 • set_material_and_profile может сбросить ранее записанные настройки — после смены
   материала/профиля перезапусти шаг 6 и проверь значения в get_printer_and_settings_summary.
 • rejected-ключи в ответе set_slicer_settings — не повод отдавать задачу пользователю:
@@ -140,13 +155,19 @@ def _truncate(text, limit=MAX_TOOL_RESULT_CHARS):
     return text[:limit] + u"…[обрезано, %d символов]" % len(text)
 
 
+class AgentStopped(Exception):
+    """Raised inside the agent loop when the user pressed Stop."""
+
+
 class LLMAgent(object):
-    def __init__(self, api_url, api_key, model_name, mcp, on_event=None):
+    def __init__(self, api_url, api_key, model_name, mcp, on_event=None,
+                 stop_event=None):
         self.api_url = (api_url or DEFAULT_API_URL).rstrip("/")
         self.api_key = api_key or ""
         self.model_name = model_name or DEFAULT_MODEL_NAME
         self.mcp = mcp
         self.on_event = on_event  # callable(event_type, data)
+        self.stop_event = stop_event  # threading.Event set by Stop
         self.conversation = [{"role": "system", "content": SYSTEM_PROMPT}]
 
     # ------------------------------------------------------------------
@@ -156,6 +177,11 @@ class LLMAgent(object):
                 self.on_event(event_type, data)
             except Exception:
                 pass
+
+    # ------------------------------------------------------------------
+    def _check_stopped(self):
+        if self.stop_event is not None and self.stop_event.is_set():
+            raise AgentStopped()
 
     # ------------------------------------------------------------------
     def _chat_completion(self, messages):
@@ -218,6 +244,7 @@ class LLMAgent(object):
 
         tool_cards = []
         for iteration in range(MAX_TOOL_ITERATIONS):
+            self._check_stopped()
             self._emit("status", {"state": "thinking",
                                   "iteration": iteration + 1})
             message = self._chat_completion(self.conversation)
@@ -232,6 +259,7 @@ class LLMAgent(object):
             self.conversation.append(message)
 
             for call in tool_calls:
+                self._check_stopped()
                 function = call.get("function") or {}
                 name = function.get("name") or "unknown"
                 try:

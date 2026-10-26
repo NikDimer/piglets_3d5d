@@ -19,13 +19,15 @@
 # slicer) and the extension object passed in.
 
 import os
-from PyQt5.QtCore import Qt, QTimer, QObject, QPoint, QEvent, pyqtSignal
+from PyQt5.QtCore import (Qt, QTimer, QObject, QPoint, QRect, QEvent,
+                          pyqtSignal)
 from PyQt5.QtGui import (QBrush, QColor, QFontMetrics, QLinearGradient,
                          QMovie, QPainter, QPainterPath, QPen, QPixmap)
 from PyQt5.QtWidgets import (
     QApplication, QFrame, QLabel, QPushButton, QTextEdit, QTextBrowser,
     QVBoxLayout, QHBoxLayout, QFileDialog, QProgressBar, QDialog, QLineEdit,
-    QDialogButtonBox, QFormLayout, QListWidget, QListWidgetItem, QMenu
+    QDialogButtonBox, QFormLayout, QListWidget, QListWidgetItem, QMenu,
+    QScrollArea, QWidget
 )
 
 MODULE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -391,7 +393,8 @@ class ChatPanel(QFrame):
     sendMessageRequested = pyqtSignal(str)
     attachFilesRequested = pyqtSignal(list)
     removeAttachmentRequested = pyqtSignal(int)
-    actionRequested = pyqtSignal(str)   # browser/clear/settings/tools/close
+    actionRequested = pyqtSignal(str)   # browser/clear/settings/tools/learn/close
+    stopRequested = pyqtSignal()
 
     def __init__(self):
         super(ChatPanel, self).__init__(None,
@@ -401,6 +404,7 @@ class ChatPanel(QFrame):
         self._drag_offset = None
         self._attachments = []      # [(name, path)]
         self._last_assistant_text = u""
+        self._busy = False
 
         self.setStyleSheet("""
             QLabel { color: %s; font-size: 24px; }
@@ -478,6 +482,7 @@ class ChatPanel(QFrame):
         for text, action, tooltip in (
                 (u"🌐 В браузере", "browser", u"Открыть полную веб-версию чата"),
                 (u"🛠", "tools", u"MCP-инструменты"),
+                (u"❓", "learn", u"Обучение: что делает каждый параметр печати"),
                 (u"⚙", "settings", u"API-ключ, адрес и модель"),
                 (u"🧹", "clear", u"Стереть историю диалога"),
                 (u"✕", "close", u"Свернуть чат (Кали останется на месте)")):
@@ -602,7 +607,7 @@ class ChatPanel(QFrame):
         self._send_button.setToolTip(u"Отправить")
         self._send_button.setCursor(Qt.PointingHandCursor)
         self._send_button.setFixedSize(96, 88)
-        self._send_button.clicked.connect(self._submit)
+        self._send_button.clicked.connect(self._send_clicked)
 
         layout.addWidget(attach_button)
         layout.addWidget(self._input, 1)
@@ -675,9 +680,23 @@ class ChatPanel(QFrame):
         self._typing_label.setVisible(bool(active))
 
     def set_busy(self, busy):
-        self._send_button.setEnabled(not busy)
-        self._send_button.setText(u"…" if busy else u"➤")
-        self._input.setEnabled(not busy)
+        self._busy = bool(busy)
+        if busy:
+            # while the agent runs, the send button becomes the Stop button
+            self._send_button.setText(u"⏹")
+            self._send_button.setToolTip(u"Остановить выполнение")
+            self._send_button.setEnabled(True)
+        else:
+            self._send_button.setText(u"➤")
+            self._send_button.setToolTip(u"Отправить")
+            self._send_button.setEnabled(True)
+        self._input.setEnabled(not self._busy)
+
+    def _send_clicked(self):
+        if self._busy:
+            self.stopRequested.emit()
+        else:
+            self._submit()
 
     def set_slicing(self, active, percent):
         self._progress_frame.setVisible(bool(active))
@@ -761,6 +780,320 @@ class ChatPanel(QFrame):
 
 
 # ----------------------------------------------------------------------------
+# learning reference: "?" next to every parameter and section, tooltip on
+# hover explains what it does (data comes from the slicer's own setting
+# definitions; FALLBACK_REFERENCE is used outside the slicer)
+# ----------------------------------------------------------------------------
+
+FALLBACK_REFERENCE = [
+    {"title": u"Качество", "description":
+        u"Разрешение печати: тонкость слоёв и деталей.",
+     "params": [
+        {"key": "layer_height", "label": u"Высота слоя",
+         "description": u"Толщина одного слоя. Меньше слой — глаже "
+                        u"поверхность, но дольше печать.",
+         "value": u"0.2 mm"},
+        {"key": "line_width", "label": u"Ширина линии",
+         "description": u"Толщина выдавливаемой линии пластика.",
+         "value": u"0.4 mm"},
+     ]},
+    {"title": u"Заполнение", "description":
+        u"Внутренняя структура детали: прочность против расхода пластика.",
+     "params": [
+        {"key": "infill_sparse_density", "label": u"Плотность заполнения",
+         "description": u"Процент заполнения внутреннего объёма. 15–25% — "
+                        u"обычные детали, 50%+ — нагруженные.",
+         "value": u"20 %"},
+     ]},
+    {"title": u"Материал", "description":
+        u"Температуры и охлаждение.",
+     "params": [
+        {"key": "material_print_temperature", "label": u"Температура печати",
+         "description": u"Температура сопла. PLA ~210 °C, PETG ~240 °C, "
+                        u"ABS ~250 °C.",
+         "value": u"210 °C"},
+        {"key": "material_bed_temperature", "label": u"Температура стола",
+         "description": u"Нагрев платформы для адгезии первого слоя.",
+         "value": u"60 °C"},
+     ]},
+    {"title": u"Поддержки и адгезия", "description":
+        u"Помощь нависающим участкам и приклейка детали к столу.",
+     "params": [
+        {"key": "support_enable", "label": u"Поддержки",
+         "description": u"Строит подпорки под нависания. Дольше печать и "
+                        u"постобработка, но без брака на сложных углах.",
+         "value": u"False"},
+        {"key": "adhesion_type", "label": u"Тип адгезии",
+         "description": u"Юбка, кайма или плот под первым слоем: "
+                        u"skirt, brim, raft, none.",
+         "value": u"skirt"},
+     ]},
+]
+
+
+def _wrap_tip(text, limit=72):
+    """Word-wrap a tooltip so long descriptions stay readable."""
+    words = (text or u"").split()
+    lines, current = [], u""
+    for word in words:
+        if current and len(current) + len(word) + 1 > limit:
+            lines.append(current)
+            current = word
+        else:
+            current = (current + u" " + word).strip()
+    if current:
+        lines.append(current)
+    return u"<br>".join(lines)
+
+
+class SettingsReferenceDialog(QDialog):
+    """Обучение: every section and parameter with a "?" icon; hovering it
+    shows what the parameter does (and its current value on the right)."""
+
+    def __init__(self, sections, parent=None):
+        super(SettingsReferenceDialog, self).__init__(parent)
+        self.setWindowTitle(u"Обучение: параметры печати")
+        self.resize(920, 1100)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(20, 20, 20, 20)
+        layout.setSpacing(12)
+
+        hint = QLabel(u"Наведите на ❓ — узнаете, что делает параметр "
+                      u"или целый раздел")
+        hint.setStyleSheet("color: %s; font-size: 20px;" % C_DIM)
+        layout.addWidget(hint)
+
+        scroll = QScrollArea(self)
+        scroll.setWidgetResizable(True)
+        scroll.setStyleSheet(
+            "QScrollArea { border: 1px solid %s; border-radius: 14px; "
+            "background: %s; }" % (C_BORDER2, C_CARD))
+        body = QWidget()
+        col = QVBoxLayout(body)
+        col.setContentsMargins(16, 16, 16, 16)
+        col.setSpacing(4)
+        for section in sections:
+            col.addWidget(self._section_header(section))
+            for param in section.get("params", []):
+                col.addWidget(self._param_row(param))
+        col.addStretch(1)
+        scroll.setWidget(body)
+        layout.addWidget(scroll, 1)
+
+        close = QPushButton(u"Закрыть")
+        close.clicked.connect(self.accept)
+        layout.addWidget(close, 0, Qt.AlignRight)
+
+    def _section_header(self, section):
+        row = QWidget()
+        h = QHBoxLayout(row)
+        h.setContentsMargins(0, 16, 0, 4)
+        h.setSpacing(10)
+        title = QLabel(section.get("title", u""))
+        title.setStyleSheet(
+            "font-size: 26px; font-weight: bold; color: %s;" % C_LIME_DEEP)
+        tip = _wrap_tip(section.get("description")) or u"Раздел настроек печати"
+        title.setToolTip(tip)
+        icon = QLabel(u"❓")
+        icon.setStyleSheet("font-size: 18px; color: %s;" % C_TEAL)
+        icon.setToolTip(tip)
+        h.addWidget(title)
+        h.addStretch(1)
+        h.addWidget(icon)
+        return row
+
+    def _param_row(self, param):
+        row = QWidget()
+        h = QHBoxLayout(row)
+        h.setContentsMargins(10, 2, 10, 2)
+        h.setSpacing(10)
+        tip = _wrap_tip(param.get("description")) or u"Параметр печати"
+        icon = QLabel(u"❓")
+        icon.setStyleSheet("font-size: 16px; color: %s;" % C_TEAL)
+        icon.setToolTip(tip)
+        label = QLabel(param.get("label", u""))
+        label.setToolTip(tip)
+        value = QLabel(param.get("value", u""))
+        value.setStyleSheet(
+            "font-family: Consolas; font-size: 20px; color: %s;" % C_DIM)
+        h.addWidget(icon)
+        h.addWidget(label)
+        h.addStretch(1)
+        h.addWidget(value)
+        return row
+
+
+# ----------------------------------------------------------------------------
+# first-run tutorial: dim everything except a spotlight on each UI area
+# ----------------------------------------------------------------------------
+
+TUTORIAL_STEPS = [
+    {"text": u"Это 3D-сцена: здесь живёт ваша модель.\n"
+             u"Вращайте её мышью, приближайте колесом,\n"
+             u"а я помогу сориентировать и расставить детали.",
+     "zone": "viewport"},
+    {"text": u"Здесь, у сцены — инструменты:\n"
+             u"перемещение, поворот, масштаб и зеркало.\n"
+             u"Выделите модель и нажмите нужный.",
+     "zone": "tools"},
+    {"text": u"Слева — настройки печати: режим 3D/5D,\n"
+             u"материал, профиль, температуры и скорости.\n"
+             u"Не хотите возиться — я настрою всё сам!",
+     "zone": "settings"},
+    {"text": u"Сверху слева — принтер и экструдеры:\n"
+             u"каким соплом и каким материалом печатать.",
+     "zone": "top"},
+    {"text": u"Если есть ещё вопросы или не хочешь\n"
+             u"настраивать сам руками — обращайся ко мне,\n"
+             u"я всегда тебе помогу! Приятной печати!",
+     "zone": "mascot"},
+]
+
+class TutorialPrompt(QDialog):
+    """«Пройти обучение?» — первый экран при входе в программу."""
+
+    def __init__(self, parent=None):
+        super(TutorialPrompt, self).__init__(parent)
+        self.setWindowTitle(u"Пройти обучение?")
+        self.setFixedSize(640, 300)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(28, 28, 28, 24)
+        layout.setSpacing(16)
+        title = QLabel(u"🎓 Пройти обучение?")
+        title.setStyleSheet("font-size: 30px; font-weight: bold;")
+        text = QLabel(u"Покажу основные зоны слайсера за 5 шагов — "
+                      u"займёт меньше минуты.")
+        text.setWordWrap(True)
+        layout.addWidget(title)
+        layout.addWidget(text)
+        layout.addStretch(1)
+        buttons = QHBoxLayout()
+        no = QPushButton(u"Нет, я всё умею")
+        no.clicked.connect(self.reject)
+        yes = QPushButton(u"Да, поехали!")
+        yes.setStyleSheet(
+            "background: %s; color: #ffffff; font-weight: bold; "
+            "border: none; border-radius: 18px;" % C_LIME)
+        yes.clicked.connect(self.accept)
+        buttons.addWidget(no)
+        buttons.addStretch(1)
+        buttons.addWidget(yes)
+        layout.addLayout(buttons)
+
+
+class ZoneHighlight(QFrame):
+    """Тонкое окно ровно вокруг показываемой зоны: никаких затемнений,
+    только зелёная обводка ~20px со скруглением."""
+
+    BORDER = 20
+
+    clicked = pyqtSignal()
+
+    def __init__(self):
+        super(ZoneHighlight, self).__init__(None,
+                                            Qt.Tool | Qt.FramelessWindowHint |
+                                            Qt.WindowStaysOnTopHint)
+        self.setAttribute(Qt.WA_TranslucentBackground, True)
+        self.setAttribute(Qt.WA_ShowWithoutActivating, True)
+        self.setCursor(Qt.PointingHandCursor)
+
+    def mousePressEvent(self, event):
+        self.clicked.emit()
+
+    def show_zone(self, x0, y0, x1, y1):
+        m = self.BORDER // 2 + 4
+        self.setGeometry(x0 - m, y0 - m, (x1 - x0) + 2 * m, (y1 - y0) + 2 * m)
+        self.show()
+        self.raise_()
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        m = self.BORDER // 2 + 4
+        painter.setPen(QPen(QColor(C_LIME), self.BORDER))
+        painter.setBrush(Qt.NoBrush)
+        painter.drawRoundedRect(m, m, self.width() - 2 * m,
+                                self.height() - 2 * m, 16, 16)
+
+
+class TutorialPresenter(QFrame):
+    """Анимированный Кали-тренер: гифка + реплика над головой + кнопки."""
+
+    nextRequested = pyqtSignal()
+    finishRequested = pyqtSignal()
+
+    def __init__(self):
+        super(TutorialPresenter, self).__init__(None,
+                                                Qt.Tool | Qt.FramelessWindowHint |
+                                                Qt.WindowStaysOnTopHint)
+        self.setAttribute(Qt.WA_TranslucentBackground, True)
+        self.setAttribute(Qt.WA_ShowWithoutActivating, True)
+
+        self._movie = QMovie(MASCOT_MOVIES["idle"])
+        self._movie_label = QLabel(self)
+        self._movie_label.setFixedSize(150, 198)
+        self._movie_label.setScaledContents(True)
+        self._movie_label.setMovie(self._movie)
+        self._movie.start()
+
+        self._bubble = QLabel(self)
+        self._bubble.setStyleSheet(
+            "background: qlineargradient(x1:0, y1:0, x2:1, y2:0, "
+            "stop:0 #65b04b, stop:0.52 #2e9e8f, stop:1 #1f7fa8); "
+            "color: #ffffff; font-size: 21px; font-weight: 600; "
+            "border-radius: 16px; padding: 12px 18px;")
+        self._bubble.setTextFormat(Qt.PlainText)
+
+        self._next = QPushButton(u"Далее ▸", self)
+        self._next.setStyleSheet(
+            "background: %s; color: #ffffff; font-weight: bold; "
+            "border: none; border-radius: 16px; padding: 10px 22px; "
+            "font-size: 22px;" % C_LIME)
+        self._next.setCursor(Qt.PointingHandCursor)
+        self._next.clicked.connect(self.nextRequested.emit)
+
+        self._finish = QPushButton(u"✕ Завершить", self)
+        self._finish.setStyleSheet(
+            "background: rgba(255,255,255,0.85); color: %s; "
+            "border: 1px solid rgba(0,0,0,40); border-radius: 16px; "
+            "padding: 10px 18px; font-size: 22px;" % C_TEXT)
+        self._finish.setCursor(Qt.PointingHandCursor)
+        self._finish.clicked.connect(self.finishRequested.emit)
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(8)
+        root.addWidget(self._bubble, 0, Qt.AlignHCenter)
+        root.addWidget(self._movie_label, 0, Qt.AlignHCenter)
+        buttons = QHBoxLayout()
+        buttons.setSpacing(10)
+        buttons.addStretch(1)
+        buttons.addWidget(self._finish)
+        buttons.addWidget(self._next)
+        buttons.addStretch(1)
+        root.addLayout(buttons)
+
+    def set_step(self, text, last=False):
+        self._bubble.setText(text)
+        self._bubble.adjustSize()
+        self._next.setText(u"Завершить ✓" if last else u"Далее ▸")
+        self.adjustSize()
+        self.update()
+
+    def mousePressEvent(self, event):
+        self.nextRequested.emit()
+
+    def place_bottom_center(self, screen_rect):
+        self.adjustSize()
+        self.move(screen_rect.x() + screen_rect.width() // 2 -
+                  self.width() // 2,
+                  screen_rect.y() + screen_rect.height() -
+                  self.height() - 180)
+        self.show()
+        self.raise_()
+
+
+# ----------------------------------------------------------------------------
 # orchestrator: extension <-> widgets
 # ----------------------------------------------------------------------------
 
@@ -787,6 +1120,7 @@ class WidgetsUI(QObject):
         self._panel.attachFilesRequested.connect(self._attach_files)
         self._panel.removeAttachmentRequested.connect(self._remove_attachment)
         self._panel.actionRequested.connect(self._on_action)
+        self._panel.stopRequested.connect(self._request_stop)
         self._panel.installEventFilter(self)   # Alt+F4 / external close
 
         self._mascot = MascotWidget()
@@ -834,6 +1168,83 @@ class WidgetsUI(QObject):
         self._follow_host()
         self._mascot.show()
         self._say(u"Привет, я Кали!\nТебе с чем-то помочь?", sticky=True)
+        self._maybe_start_tutorial()
+
+    def _maybe_start_tutorial(self):
+        prompt = TutorialPrompt(self._panel)
+        x, y, w, h = self._host_geometry()
+        prompt.move(x + w // 2 - prompt.width() // 2,
+                    y + h // 2 - prompt.height() // 2)
+        if prompt.exec_() != QDialog.Accepted:
+            return
+        if self._panel_visible:
+            self.hide_panel()
+        try:
+            win_id = self._extension.get_main_window_id()
+        except Exception:
+            win_id = 0
+        self._tutorial_zones = self._detect_zones(win_id, w, h)
+        self._tutorial_step = 0
+        self._tutorial_origin = (x, y)
+        self._tutorial_highlight = ZoneHighlight()
+        self._tutorial_presenter = TutorialPresenter()
+        self._tutorial_presenter.nextRequested.connect(self._tutorial_next)
+        self._tutorial_presenter.finishRequested.connect(self._tutorial_stop)
+        self._tutorial_highlight.clicked.connect(self._tutorial_next)
+        screen = QApplication.screenAt(QPoint(x + w // 2, y + h // 2))
+        if screen is None:
+            screen = QApplication.primaryScreen()
+        self._tutorial_presenter.place_bottom_center(screen.geometry())
+        self._tutorial_show_step()
+
+    def _tutorial_zone_abs(self):
+        step = TUTORIAL_STEPS[self._tutorial_step]
+        name = step.get("zone")
+        if name == "mascot":
+            geo = self._mascot.geometry()
+            return (geo.x(), geo.y(), geo.x() + geo.width(),
+                    geo.y() + geo.height())
+        x0, y0, x1, y1 = self._tutorial_zones.get(name, (0, 0, 100, 100))
+        ox, oy = self._tutorial_origin
+        return (ox + x0, oy + y0, ox + x1, oy + y1)
+
+    def _tutorial_show_step(self):
+        step = TUTORIAL_STEPS[self._tutorial_step]
+        self._tutorial_highlight.show_zone(*self._tutorial_zone_abs())
+        self._tutorial_presenter.set_step(
+            step["text"], last=self._tutorial_step == len(TUTORIAL_STEPS) - 1)
+        self._mascot.raise_()
+        self._tutorial_presenter.raise_()
+
+    def _tutorial_next(self):
+        self._tutorial_step += 1
+        if self._tutorial_step >= len(TUTORIAL_STEPS):
+            self._tutorial_stop()
+        else:
+            self._tutorial_show_step()
+
+    def _tutorial_stop(self):
+        for attr in ("_tutorial_highlight", "_tutorial_presenter"):
+            widget = getattr(self, attr, None)
+            if widget is not None:
+                widget.hide()
+                widget.deleteLater()
+                setattr(self, attr, None)
+
+    def _detect_zones(self, win_id, w, h):
+        """Зоны в пикселях: верхний бар 250px на всю ширину;
+        панель настроек слева 500px; сцена от 500px до края;
+        инструменты — полоса 500..600px, центральные 50% высоты."""
+        top_h = 250
+        side_w = 500
+        scene_h = h - top_h
+        return {
+            "top": (0, 0, w, top_h),
+            "settings": (0, top_h, side_w, h),
+            "viewport": (side_w, top_h, w, h),
+            "tools": (side_w, top_h + int(scene_h * 0.25),
+                      side_w + 100, top_h + int(scene_h * 0.75)),
+        }
 
     def show_panel(self):
         self._panel_visible = True
@@ -1010,8 +1421,30 @@ class WidgetsUI(QObject):
             self._open_settings()
         elif action == "tools":
             self._open_tools()
+        elif action == "learn":
+            self._open_reference()
         elif action == "close":
             self.hide_panel()
+
+    def _request_stop(self):
+        try:
+            stopped = self._extension.request_stop()
+        except Exception:
+            stopped = False
+        if stopped:
+            self._panel.set_status(u"Останавливаю…", "processing")
+            self._say(u"Ладно, останавливаюсь 🤚")
+        else:
+            self._panel.append_error(u"Сейчас нечего останавливать")
+
+    def _open_reference(self):
+        try:
+            data = self._extension.get_settings_reference()
+        except Exception:
+            data = []
+        dialog = SettingsReferenceDialog(data or FALLBACK_REFERENCE,
+                                         self._panel)
+        dialog.exec_()
 
     # ------------- dialogs -------------
 

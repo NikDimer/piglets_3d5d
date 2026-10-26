@@ -20,7 +20,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
 
 from PyQt5.QtWidgets import QApplication
 
-from AIAssistantWidgets import ChatPanel, MascotWidget, SpeechBubble
+from AIAssistantWidgets import (ChatPanel, MascotWidget, SpeechBubble,
+                                SettingsReferenceDialog, FALLBACK_REFERENCE)
 
 failures = []
 
@@ -62,6 +63,28 @@ check("bubble empty hides", lambda: bubble.say(u""))
 check("panel intro present",
       lambda: panel._transcript.toPlainText() or (_ for _ in ()).throw(
           AssertionError("intro missing")))
+
+stop_fired = []
+panel.stopRequested.connect(lambda: stop_fired.append(1))
+
+def _stop_button_flow():
+    panel.set_busy(True)
+    assert panel._send_button.text() == u"⏹", panel._send_button.text()
+    panel._send_clicked()
+    assert stop_fired, "stop signal not emitted"
+    panel.set_busy(False)
+    assert panel._send_button.text() == u"➤", panel._send_button.text()
+
+check("send becomes stop while busy", _stop_button_flow)
+
+def _reference_dialog():
+    from PyQt5.QtWidgets import QLabel
+    dialog = SettingsReferenceDialog(FALLBACK_REFERENCE)
+    labels = dialog.findChildren(QLabel)
+    assert len(labels) > 5, "reference dialog looks empty"
+    dialog.close()
+
+check("reference dialog builds", _reference_dialog)
 
 print("=" * 78)
 if failures:
